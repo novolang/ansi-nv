@@ -1,0 +1,42 @@
+[package]
+name        = "ansi-nv"
+version     = "0.0.1"
+description = "The escape-sequence layer with no terminal under it: the VT/xterm state machine as a byte-at-a-time parser that yields typed actions, the SGR attribute model with all three colour forms, a writer that BUILDS sequences into a caller's buffer instead of printing them, and the query/response pairs a program needs.  Interface only — every body is a todo()."
+license     = "Apache-2.0"
+
+# An INTERFACE release: every `pub fn` body is a `todo()`, so the
+# signatures and the effect rows are published and nothing is
+# implemented.  `novo pkg publish` recognises the shape and requires
+# both the draft stability and the 0.0.x version; the first
+# implementation is the 0.1.0 published over it.
+stability   = "draft"
+
+# `core`, and the whole design follows from it.  A terminal is the one
+# place a library is most tempted to print, so nothing here does: bytes
+# arrive as arguments and sequences are appended to a `[u8]` the caller
+# owns and then writes itself.  The parser is a value — `feed_byte`
+# takes one and returns one — which is what lets a caller keep the
+# parser a dispatch fired with and read its parameters afterwards.
+layer       = "core"
+
+category    = "terminal"
+
+tags        = ["ansi", "vt100", "xterm", "escape-sequences", "sgr", "csi", "osc", "terminal", "sans-io", "ecma-48"]
+repository  = "https://github.com/novolang/ansi-nv"
+maintainers = ["novo-lang"]
+novo        = ">= 0.8.9"
+
+# A library: no `main`, so `novo pkg build` type-checks and
+# effect-checks every module under `src/` and writes no binary.
+
+[docs.pages]
+"README.md" = "Escape sequences, with no terminal attached"
+
+[dependencies]
+# None, and that is a claim rather than an accident.  The state machine
+# is a switch over a byte, the SGR model is a struct of flags and three
+# colours, and the writer appends decimal digits to a list — a package
+# that needed a dependency for any of that would be the wrong package.
+# It is also what lets the whole surface link for a Cortex-M, which is
+# the one dependency-shaped decision here: a device driving a serial
+# console wants exactly this and can afford nothing more.

@@ -1,0 +1,468 @@
+// vtparse.nv — the VT/xterm state machine, as a value that takes one
+// byte and hands back one action.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// The machine is Paul Williams' DEC parser ("A parser for DEC's
+// ANSI-compatible video terminals") with the four additions every
+// modern terminal needs: UTF-8 decoding in the ground state, colon
+// sub-parameters inside a CSI (ITU-T T.416, which is how a curly
+// underline and its colour arrive), OSC strings terminated by either
+// BEL or ST, and a private marker kept separate from the intermediates
+// so that `CSI ? 1049 h` and `CSI 1049 h` cannot be confused.
+//
+// THE PARSER IS A VALUE, AND THAT IS THE LOAD-BEARING DECISION.  A
+// dispatch action names its final byte and nothing else; the numbers
+// that came with it stay on the parser, read back through `param_at`
+// and its neighbours.  Because `feed_byte` returns the parser rather
+// than mutating one, the value it returns still HOLDS those numbers —
+// so a caller may keep it, dispatch on the action, and read the
+// parameters at leisure, which a mutable parser cannot promise.  It is
+// also why nothing on the hot path allocates: `AnsiAction` carries at
+// most two integers.
+//
+// A CHUNK MAY SPLIT ANYWHERE.  There is no "give me a whole sequence"
+// entry point, because a read from a pty ends where the kernel says it
+// ends — in the middle of a parameter list, between the two bytes of a
+// UTF-8 codepoint, halfway through an OSC payload.  Every one of those
+// is an ordinary rest position for this machine.
+//
+// WHAT IS NOT HERE.  A grid, a cursor, a scrollback, and any notion of
+// what a sequence MEANS.  `CSI 2 J` arrives as
+// `AnsiCsiDispatch(final_byte: 0x4A)` with parameter 0 equal to 2, and
+// what to erase is the caller's model to change.  That separation is
+// the reason this package can be the parser for a terminal emulator, a
+// multiplexer, a log scrubber and a device driving a serial console
+// without any of them inheriting the others' idea of a screen.
+//
+// ```novo
+// use std.str
+// use vtparse
+//
+// fn main() [io]
+//     var p = vtparse.parser_new()
+//     for b in [0x1B, 0x5B, 0x32, 0x3B, 0x31, 0x48]
+//         let step = vtparse.feed_byte(p, b)
+//         p = step.parser
+//         match step.action
+//             AnsiCsiDispatch(_) =>
+//                 // CUP: row 2, column 1, and the parameters are still
+//                 // readable off the parser the dispatch came with.
+//                 println(str.from_int(vtparse.param_at(step.parser, 0, 1)))
+//                 println(str.from_int(vtparse.param_at(step.parser, 1, 1)))
+//             _ => println("consumed")
+// ```
+
+// AnsiState is where the machine is resting between bytes.
+//
+// It is `pub` because a caller that has to reason about a partial read
+// — a proxy deciding whether it is safe to inject a sequence, a test
+// asserting that a chunk boundary left nothing behind — needs to ask,
+// and because `AnsiGround` is the only state in which injecting bytes
+// into the stream is safe.
+pub enum AnsiState
+    // Between sequences: the next byte is text, a C0 control, or the
+    // ESC that starts one.
+    AnsiGround
+    // ESC has arrived and the next byte decides what kind of sequence
+    // this is.
+    AnsiEscape
+    // ESC with intermediates collected, waiting for the final byte.
+    AnsiEscapeIntermediate
+    // CSI has arrived; no parameter byte has been seen yet, so the
+    // next byte may still be the private marker.
+    AnsiCsiEntry
+    // Inside a CSI's parameter list, collecting digits, semicolons and
+    // colons.
+    AnsiCsiParam
+    // Inside a CSI, past the parameters, collecting intermediates.
+    AnsiCsiIntermediate
+    // Inside a CSI that has already broken a rule — too many
+    // parameters, a parameter too large, an intermediate before the
+    // private marker.  The bytes are consumed to the final byte and
+    // the sequence is dropped rather than half-applied.
+    AnsiCsiIgnore
+    // Inside an OSC string, and every payload byte is coming out as
+    // `AnsiOscPut`.
+    AnsiOscString
+    // Inside a DCS's parameter list.
+    AnsiDcsParam
+    // Inside a DCS's payload, and every byte is coming out as
+    // `AnsiDcsPut`.
+    AnsiDcsPassthrough
+    // Inside SOS, PM or APC — a string this package consumes and does
+    // not report, so that its payload cannot leak back into the ground
+    // state and be re-parsed as text.
+    AnsiIgnoredString
+    // Part-way through a multi-byte UTF-8 codepoint, waiting for
+    // continuation bytes.
+    AnsiUtf8Continuation
+
+// AnsiTerminator is which of the two endings an OSC or DCS string
+// actually used.
+//
+// It is reported rather than normalised because the answer decides what
+// a program echoes back: a terminal that was asked with BEL is answered
+// with BEL, and xterm's own OSC 52 handling is the case that made this
+// worth a variant instead of a `Bool`.
+pub enum AnsiTerminator
+    // BEL, 0x07 — xterm's original, still what most programs send.
+    AnsiBelTerminated
+    // ST, ESC backslash — the form ECMA-48 defines.
+    AnsiStTerminated
+
+// AnsiFault is a rule the incoming bytes broke.
+//
+// A fault is reported and the sequence is dropped; the machine never
+// stops, because a terminal that stopped parsing on a malformed
+// sequence would be a terminal one bad byte could wedge.  Every fault
+// names a LIMIT rather than a syntax error, because the syntax has no
+// errors — an unrecognised final byte is a sequence for a feature this
+// package does not implement, not a mistake.
+pub enum AnsiFault
+    // More parameters than `AnsiLimits.params_max`.
+    AnsiTooManyParams
+    // More sub-parameters in one group than `AnsiLimits.subs_max`.
+    AnsiTooManySubParams
+    // A parameter's digits ran past `AnsiLimits.param_max`.
+    AnsiParamTooLarge
+    // More intermediate bytes than `AnsiLimits.intermediates_max`.
+    AnsiTooManyIntermediates
+    // An OSC payload ran past `AnsiLimits.osc_bytes_max`.  The bytes
+    // already reported stand; the rest of the string is consumed and
+    // dropped.
+    AnsiOscTooLong
+    // A DCS payload ran past `AnsiLimits.dcs_bytes_max`.
+    AnsiDcsTooLong
+    // A UTF-8 sequence that is not one: a continuation byte in the
+    // ground state, a lead byte that promises more bytes than arrived,
+    // an overlong form, or a surrogate.  `REPLACEMENT_CHAR` is
+    // reported as an `AnsiPrint` immediately after.
+    AnsiBadUtf8
+
+// AnsiAction is one thing the caller has to do about one byte.
+//
+// It is deliberately small: at most one integer, no lists, nothing
+// borrowed from the parser.  Everything a dispatch needs beyond its
+// final byte — the parameters, their sub-parameters, the intermediates,
+// the private marker — is read off the parser the step returned.
+pub enum AnsiAction
+    // The byte was consumed and there is nothing to do: a digit inside
+    // a parameter list, a continuation byte part-way through a
+    // codepoint, the `[` after an ESC.
+    AnsiNothing
+    // A whole codepoint to put on the screen.  Combining marks and
+    // wide characters arrive as themselves; how many cells one takes
+    // is the caller's question, and textwrap-nv is where the answer
+    // lives.
+    AnsiPrint(ch: Int)
+    // A C0 or C1 control that acts on its own: BS, HT, LF, VT, FF, CR,
+    // BEL, and the 8-bit forms.
+    AnsiExecute(control: Int)
+    // ESC <intermediates> <final> — DECSC (`ESC 7`), DECRC (`ESC 8`),
+    // IND, NEL, RI, RIS, and the charset designators.
+    AnsiEscDispatch(final_byte: Int)
+    // CSI <private> <params> <intermediates> <final> — the whole of
+    // cursor movement, erasing, scrolling, SGR, the mode sets, and the
+    // queries.
+    AnsiCsiDispatch(final_byte: Int)
+    // An OSC string is starting.  Its numeric code is not known yet:
+    // it arrives as the payload bytes before the first semicolon, so a
+    // caller accumulates the payload and reads it with `osc_code` once
+    // `AnsiOscEnd` has fired.
+    AnsiOscStart
+    // One byte of an OSC payload.  Reported a byte at a time so that
+    // an OSC 52 clipboard payload of any length costs the parser
+    // nothing to carry.
+    AnsiOscPut(byte: Int)
+    // The OSC string ended, and how.
+    AnsiOscEnd(terminator: AnsiTerminator)
+    // A DCS string is starting; its parameters and final byte are on
+    // the parser, exactly as a CSI's are.
+    AnsiDcsStart(final_byte: Int)
+    // One byte of a DCS payload.
+    AnsiDcsPut(byte: Int)
+    // The DCS string ended, and how.
+    AnsiDcsEnd(terminator: AnsiTerminator)
+    // The incoming bytes broke a limit.  The sequence is dropped; the
+    // machine carries on.
+    AnsiRefused(why: AnsiFault)
+
+// AnsiLimits is the ceiling on everything the parser has to remember.
+//
+// A parser with no ceiling is a parser a hostile stream can grow
+// without bound, and a `core` package cannot decide for its caller how
+// much memory that caller has.  So every bound is a number the caller
+// sets, `default_limits` is what a terminal emulator wants, and
+// `strict_limits` is what a device with kilobytes wants.
+pub struct AnsiLimits
+    // Parameters in one CSI or DCS.  xterm keeps 30; ECMA-48 sets no
+    // limit.
+    params_max: Int
+    // Sub-parameters in one colon-separated group.  Six covers `4:3`
+    // and `38:2::R:G:B`, which is every form in use.
+    subs_max: Int
+    // The largest value one parameter may hold.  A larger one is a
+    // fault rather than a wrap, because a wrapped 65536 is a cursor
+    // move to somewhere nobody asked for.
+    param_max: Int
+    // Intermediate bytes kept per sequence.  Two is every sequence
+    // ECMA-48 defines.
+    intermediates_max: Int
+    // Bytes of OSC payload reported before `AnsiOscTooLong`.
+    osc_bytes_max: Int
+    // Bytes of DCS payload reported before `AnsiDcsTooLong`.
+    dcs_bytes_max: Int
+
+// AnsiParser is the machine: a state, the numbers collected so far,
+// and the counters that enforce the limits.
+//
+// It is a value.  `feed_byte` takes one and returns one, so a caller
+// may hold the parser a dispatch fired with, read its parameters, and
+// keep feeding a different copy — which is what makes the "read the
+// parameters afterwards" promise real rather than a convention.
+pub struct AnsiParser
+    state: AnsiState
+    limits: AnsiLimits
+    // One entry per parameter, in the order they arrived.  A parameter
+    // the sequence left empty — the two in `CSI ; ; H` — is
+    // `PARAM_EMPTY`, so that "absent" and "zero" stay different
+    // answers and `param_at`'s fallback can do its job.
+    values: [Int]
+    // The group each entry of `values` belongs to.  Colon-separated
+    // sub-parameters share a group, semicolon-separated ones do not,
+    // so `38:2::1:2:3;4` is groups `0 0 0 0 0 0` then `1`.  A flat pair
+    // of lists rather than a list of lists, because the sub-parameter
+    // is a rarity and a nested allocation per CSI is not.
+    groups: [Int]
+    // The intermediate bytes, 0x20..0x2F, in order.
+    intermediates: [Int]
+    // The private marker, 0x3C..0x3F — `<`, `=`, `>` or `?` — or
+    // `NO_PRIVATE_MARKER` when the sequence had none.
+    private_marker: Int
+    // Bytes of the current string payload already reported, against
+    // the OSC and DCS ceilings.
+    string_bytes: Int
+    // The partly-assembled codepoint and how many continuation bytes
+    // it still owes.
+    utf8_value: Int
+    utf8_owed: Int
+
+// AnsiStep is one byte's worth of progress: the parser afterwards, and
+// what the caller has to do about it.
+pub struct AnsiStep
+    parser: AnsiParser
+    action: AnsiAction
+
+// AnsiParams is a snapshot of everything a dispatch came with, as one
+// value.
+//
+// The byte-at-a-time path does not need it — `param_at` reads the
+// parser directly and allocates nothing.  It exists for `feed`, which
+// hands back a list of actions the caller will look at after the
+// parser has moved on, and for `sgr.apply_sgr`, which wants the whole
+// parameter list as one argument.
+pub struct AnsiParams
+    values: [Int]
+    groups: [Int]
+    intermediates: [Int]
+    private_marker: Int
+
+// AnsiCall is one action and the parameters it fired with.
+//
+// This is the pairing `feed` exists to make: an action alone is not
+// enough once the parser has moved past it, so the chunk path copies
+// the numbers out at the moment of the dispatch.  That copy is the
+// difference in cost between the two entry points, and it is why the
+// byte path is the one a device uses.
+pub struct AnsiCall
+    action: AnsiAction
+    params: AnsiParams
+
+// AnsiDrained is a whole chunk's worth of calls, and the parser left
+// over.
+pub struct AnsiDrained
+    parser: AnsiParser
+    calls: [AnsiCall]
+
+// The value `param_at` sees for a parameter the sequence left empty,
+// as in the two empty slots of `CSI ; ; H`.
+pub const PARAM_EMPTY = 0 - 1
+
+// The value `private_marker_of` returns for a sequence that had none.
+pub const NO_PRIVATE_MARKER = 0
+
+// The codepoint reported after `AnsiBadUtf8` — U+FFFD, the replacement
+// character.
+pub const REPLACEMENT_CHAR = 0xFFFD
+
+// default_limits is what a terminal emulator on a machine with memory
+// wants: 32 parameters, 6 sub-parameters, values to 65535, 2
+// intermediates, and payloads to 4096 bytes.
+pub fn default_limits() -> AnsiLimits
+    todo("ansi-nv.vtparse.default_limits")
+
+// strict_limits is what a device with kilobytes wants: 8 parameters,
+// 4 sub-parameters, values to 4095, 2 intermediates, and payloads to
+// 128 bytes.
+//
+// The payload ceilings are the ones that matter: an OSC 52 paste from
+// a hostile peer is unbounded, and on a serial console there is
+// nowhere to put it.
+pub fn strict_limits() -> AnsiLimits
+    todo("ansi-nv.vtparse.strict_limits")
+
+// parser_new is a parser in the ground state with `default_limits`.
+pub fn parser_new() -> AnsiParser
+    todo("ansi-nv.vtparse.parser_new")
+
+// parser_with is a parser in the ground state with the limits given.
+pub fn parser_with(limits: AnsiLimits) -> AnsiParser
+    todo("ansi-nv.vtparse.parser_with")
+
+// feed_byte advances the machine by one byte and says what to do about
+// it.
+//
+// This is the entry point everything else is written over, and the only
+// one that allocates nothing per byte.  A chunk boundary anywhere is an
+// ordinary rest position: feed the last byte of one read, keep the
+// parser, feed the first byte of the next.
+//
+// ```novo
+// use std.str
+// use vtparse
+//
+// fn main() [io]
+//     let p = vtparse.parser_new()
+//     let step = vtparse.feed_byte(p, 0x41)
+//     match step.action
+//         AnsiPrint(ch) => println(str.from_int(ch))
+//         _             => println("not a printable")
+// ```
+pub fn feed_byte(p: AnsiParser, b: Int) -> AnsiStep
+    todo("ansi-nv.vtparse.feed_byte")
+
+// feed advances the machine over a whole chunk, pairing every action
+// with the parameters it fired with.
+//
+// The convenience over `feed_byte`, and it costs what the pairing
+// costs: one `AnsiParams` copied per dispatch.  A caller that cannot
+// pay that — a device, or anything on a hot path — feeds bytes.
+pub fn feed(p: AnsiParser, chunk: [u8]) -> AnsiDrained
+    todo("ansi-nv.vtparse.feed")
+
+// reset puts the machine back in the ground state and forgets every
+// partial sequence.
+//
+// What a program calls after it has written `ESC c` (RIS), or after it
+// has taken a stream over from somewhere it does not trust.
+pub fn reset(p: AnsiParser) -> AnsiParser
+    todo("ansi-nv.vtparse.reset")
+
+// state_of is where the machine is resting.
+pub fn state_of(p: AnsiParser) -> AnsiState
+    todo("ansi-nv.vtparse.state_of")
+
+// is_settled says whether the machine is in the ground state — the one
+// state in which injecting bytes into the stream is safe.
+pub fn is_settled(p: AnsiParser) -> Bool
+    todo("ansi-nv.vtparse.is_settled")
+
+// param_count is how many parameters the last dispatch came with,
+// counting a colon group as one.
+pub fn param_count(p: AnsiParser) -> Int
+    todo("ansi-nv.vtparse.param_count")
+
+// param_at is parameter `i`, with `fallback` for one that is absent or
+// empty.
+//
+// The fallback is a parameter rather than a fixed zero because ECMA-48
+// gives different defaults to different sequences: CUU's omitted
+// parameter means 1, ED's means 0, and a caller that hard-coded either
+// would be wrong half the time.
+pub fn param_at(p: AnsiParser, i: Int, fallback: Int) -> Int
+    todo("ansi-nv.vtparse.param_at")
+
+// sub_count is how many sub-parameters parameter `i` has, counting
+// itself: 1 for a plain parameter, 6 for `38:2::1:2:3`.
+pub fn sub_count(p: AnsiParser, i: Int) -> Int
+    todo("ansi-nv.vtparse.sub_count")
+
+// sub_at is sub-parameter `j` of parameter `i`, with `fallback` for
+// one that is absent or empty — the empty middle slot of
+// `38:2::1:2:3` being the case that matters.
+pub fn sub_at(p: AnsiParser, i: Int, j: Int, fallback: Int) -> Int
+    todo("ansi-nv.vtparse.sub_at")
+
+// intermediate_count is how many intermediate bytes the last dispatch
+// came with.
+pub fn intermediate_count(p: AnsiParser) -> Int
+    todo("ansi-nv.vtparse.intermediate_count")
+
+// intermediate_at is intermediate byte `i`, or 0 past the end.
+pub fn intermediate_at(p: AnsiParser, i: Int) -> Int
+    todo("ansi-nv.vtparse.intermediate_at")
+
+// private_marker_of is the byte that opened a private sequence — `?`
+// for the DEC modes, `<`, `=` or `>` for the others — or
+// `NO_PRIVATE_MARKER`.
+//
+// Kept apart from the intermediates because `CSI ? 1049 h` and
+// `CSI 1049 h` are different sequences, and a parser that folded the
+// two would switch to the alternate screen when asked to set insert
+// mode.
+pub fn private_marker_of(p: AnsiParser) -> Int
+    todo("ansi-nv.vtparse.private_marker_of")
+
+// params_of copies everything the last dispatch came with into one
+// value.
+//
+// Allocates, which is why the byte path does not use it.  It is how a
+// caller hands a whole parameter list to `sgr.apply_sgr`, and what
+// `feed` pairs with each action.
+pub fn params_of(p: AnsiParser) -> AnsiParams
+    todo("ansi-nv.vtparse.params_of")
+
+// params_empty is a snapshot with no parameters, no intermediates and
+// no private marker.
+pub fn params_empty() -> AnsiParams
+    todo("ansi-nv.vtparse.params_empty")
+
+// params_count is how many parameters a snapshot holds.
+pub fn params_count(ps: AnsiParams) -> Int
+    todo("ansi-nv.vtparse.params_count")
+
+// params_at is parameter `i` of a snapshot, with `fallback` for one
+// that is absent or empty.
+pub fn params_at(ps: AnsiParams, i: Int, fallback: Int) -> Int
+    todo("ansi-nv.vtparse.params_at")
+
+// params_sub_count is how many sub-parameters parameter `i` of a
+// snapshot has, counting itself.
+pub fn params_sub_count(ps: AnsiParams, i: Int) -> Int
+    todo("ansi-nv.vtparse.params_sub_count")
+
+// params_sub_at is sub-parameter `j` of parameter `i` of a snapshot,
+// with `fallback` for one that is absent or empty.
+pub fn params_sub_at(ps: AnsiParams, i: Int, j: Int, fallback: Int) -> Int
+    todo("ansi-nv.vtparse.params_sub_at")
+
+// osc_code reads the numeric code off an accumulated OSC payload — the
+// digits before the first semicolon.
+//
+// `None` when the payload does not begin with digits, which is what an
+// OSC the caller should ignore looks like.  The parser does not hold
+// the payload, so the caller passes the bytes it accumulated from
+// `AnsiOscPut`.
+pub fn osc_code(payload: [u8]) -> ?Int
+    todo("ansi-nv.vtparse.osc_code")
+
+// osc_field is field `n` of an accumulated OSC payload, counting the
+// code as field 0 and splitting on semicolons.
+//
+// `None` past the end.  OSC 52's payload is `52;c;<base64>`, so the
+// selection is field 1 and the data field 2 — and the last field is
+// returned whole rather than split further, because a base64 payload
+// may legitimately contain nothing this function would split on.
+pub fn osc_field(payload: [u8], n: Int) -> ?[u8]
+    todo("ansi-nv.vtparse.osc_field")

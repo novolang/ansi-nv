@@ -1,0 +1,345 @@
+// seqwrite.nv — the other direction: sequences BUILT into a buffer the
+// caller owns.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// A LIBRARY DOES NOT PRINT, and a terminal library is where that rule
+// is hardest to keep and matters most.  Every function here takes the
+// byte buffer it should append to and returns it; nothing opens a file
+// descriptor, nothing consults `isatty`, nothing decides on the
+// program's behalf that something should appear on a console.  The
+// consequence is the whole reason the package is `core`: the same
+// calls build a screen update for a pty, a golden file for a test, a
+// frame for a serial console, and a recording nobody will ever display.
+//
+// THE BUFFER IS THE CALLER'S.  `out` in, `out` out.  A caller batches
+// a whole frame into one list and writes it once — which is not an
+// optimisation but a correctness property, because a screen update
+// split across two writes is a screen update a reader can see tear.
+//
+// THE PARAMETER NAMES ARE ONE-BASED WHERE THE TERMINAL IS.  `cursor_to`
+// takes row 1, column 1 for the top left, because that is what CUP
+// means and a library that helpfully subtracted one would be a library
+// every caller adds one back for.  The grid types in tui-nv are
+// zero-based, and the conversion happens at that boundary, once, where
+// it is written down.
+
+use sgr
+
+// ── Cursor ──────────────────────────────────────────────────────────
+
+// cursor_to appends CUP — put the cursor at `row`, `col`, both
+// one-based, with the top left being 1, 1.
+pub fn cursor_to(out: [u8], row: Int, col: Int) -> [u8]
+    todo("ansi-nv.seqwrite.cursor_to")
+
+// cursor_up appends CUU — up `n` rows, stopping at the top of the
+// scroll region.
+pub fn cursor_up(out: [u8], n: Int) -> [u8]
+    todo("ansi-nv.seqwrite.cursor_up")
+
+// cursor_down appends CUD — down `n` rows, stopping at the bottom of
+// the scroll region.
+pub fn cursor_down(out: [u8], n: Int) -> [u8]
+    todo("ansi-nv.seqwrite.cursor_down")
+
+// cursor_forward appends CUF — right `n` columns.
+pub fn cursor_forward(out: [u8], n: Int) -> [u8]
+    todo("ansi-nv.seqwrite.cursor_forward")
+
+// cursor_back appends CUB — left `n` columns.
+pub fn cursor_back(out: [u8], n: Int) -> [u8]
+    todo("ansi-nv.seqwrite.cursor_back")
+
+// cursor_column appends CHA — to column `col`, one-based, leaving the
+// row alone.
+pub fn cursor_column(out: [u8], col: Int) -> [u8]
+    todo("ansi-nv.seqwrite.cursor_column")
+
+// cursor_row appends VPA — to row `row`, one-based, leaving the column
+// alone.
+pub fn cursor_row(out: [u8], row: Int) -> [u8]
+    todo("ansi-nv.seqwrite.cursor_row")
+
+// cursor_next_line appends CNL — down `n` rows, to column 1.
+pub fn cursor_next_line(out: [u8], n: Int) -> [u8]
+    todo("ansi-nv.seqwrite.cursor_next_line")
+
+// cursor_prev_line appends CPL — up `n` rows, to column 1.
+pub fn cursor_prev_line(out: [u8], n: Int) -> [u8]
+    todo("ansi-nv.seqwrite.cursor_prev_line")
+
+// cursor_save appends DECSC (`ESC 7`), which saves the cursor position
+// AND the current attributes.
+//
+// The attribute half is why this is not interchangeable with SCOSC
+// (`CSI s`), and why a program that saves and restores around a status
+// line does not have to re-emit its colours.
+pub fn cursor_save(out: [u8]) -> [u8]
+    todo("ansi-nv.seqwrite.cursor_save")
+
+// cursor_restore appends DECRC (`ESC 8`).
+pub fn cursor_restore(out: [u8]) -> [u8]
+    todo("ansi-nv.seqwrite.cursor_restore")
+
+// AnsiCursorShape is what the cursor looks like — DECSCUSR's six
+// settings plus the terminal's own default.
+pub enum AnsiCursorShape
+    // `CSI 0 q` — whatever the user configured.
+    AnsiShapeDefault
+    AnsiBlinkingBlock
+    AnsiSteadyBlock
+    AnsiBlinkingUnderline
+    AnsiSteadyUnderline
+    AnsiBlinkingBar
+    AnsiSteadyBar
+
+// cursor_shape appends DECSCUSR.
+pub fn cursor_shape(out: [u8], shape: AnsiCursorShape) -> [u8]
+    todo("ansi-nv.seqwrite.cursor_shape")
+
+// ── Erasing and scrolling ───────────────────────────────────────────
+
+// AnsiEraseMode is how much of a line or a display to erase.
+pub enum AnsiEraseMode
+    // From the cursor to the end — mode 0.
+    AnsiEraseToEnd
+    // From the start to the cursor — mode 1.
+    AnsiEraseToStart
+    // The whole line, or the whole display — mode 2.
+    AnsiEraseAll
+    // The scrollback — mode 3, ED only.  xterm's extension, and the
+    // one every program that wants a genuinely clean screen needs;
+    // `AnsiEraseAll` leaves the scrollback in place, which is what
+    // makes a `clear` that scrolls the old screen up out of view.
+    AnsiEraseScrollback
+
+// erase_display appends ED.
+pub fn erase_display(out: [u8], mode: AnsiEraseMode) -> [u8]
+    todo("ansi-nv.seqwrite.erase_display")
+
+// erase_line appends EL.  `AnsiEraseScrollback` is not a line mode and
+// is written as `AnsiEraseAll`.
+pub fn erase_line(out: [u8], mode: AnsiEraseMode) -> [u8]
+    todo("ansi-nv.seqwrite.erase_line")
+
+// erase_chars appends ECH — blank `n` cells from the cursor without
+// moving anything.
+pub fn erase_chars(out: [u8], n: Int) -> [u8]
+    todo("ansi-nv.seqwrite.erase_chars")
+
+// scroll_region appends DECSTBM — set the scrolling region to rows
+// `top`..`bottom`, both one-based and inclusive.
+//
+// Setting the region also homes the cursor, which is a side effect of
+// the sequence and not of this function, and it is the one every
+// caller forgets.
+pub fn scroll_region(out: [u8], top: Int, bottom: Int) -> [u8]
+    todo("ansi-nv.seqwrite.scroll_region")
+
+// scroll_region_reset appends DECSTBM with no parameters — the whole
+// screen scrolls again.
+pub fn scroll_region_reset(out: [u8]) -> [u8]
+    todo("ansi-nv.seqwrite.scroll_region_reset")
+
+// scroll_up appends SU — the region's content moves up `n` rows.
+pub fn scroll_up(out: [u8], n: Int) -> [u8]
+    todo("ansi-nv.seqwrite.scroll_up")
+
+// scroll_down appends SD — the region's content moves down `n` rows.
+pub fn scroll_down(out: [u8], n: Int) -> [u8]
+    todo("ansi-nv.seqwrite.scroll_down")
+
+// insert_lines appends IL — `n` blank lines at the cursor, the rest of
+// the region pushed down.
+pub fn insert_lines(out: [u8], n: Int) -> [u8]
+    todo("ansi-nv.seqwrite.insert_lines")
+
+// delete_lines appends DL — `n` lines removed at the cursor, the rest
+// of the region pulled up.
+pub fn delete_lines(out: [u8], n: Int) -> [u8]
+    todo("ansi-nv.seqwrite.delete_lines")
+
+// insert_chars appends ICH — `n` blank cells at the cursor, the rest
+// of the line pushed right.
+pub fn insert_chars(out: [u8], n: Int) -> [u8]
+    todo("ansi-nv.seqwrite.insert_chars")
+
+// delete_chars appends DCH — `n` cells removed at the cursor, the rest
+// of the line pulled left.
+pub fn delete_chars(out: [u8], n: Int) -> [u8]
+    todo("ansi-nv.seqwrite.delete_chars")
+
+// ── Modes ───────────────────────────────────────────────────────────
+
+// AnsiMode is a terminal setting that can be turned on and off.
+//
+// The named variants are the ones a program uses by name; the two
+// numeric ones are the escape hatch, because the DEC private space is
+// open-ended and a library that only knew the ones it had heard of
+// would be a library every caller writes raw bytes around.
+pub enum AnsiMode
+    // IRM, `CSI 4 h` — insert rather than replace.  An ANSI mode, not
+    // a private one.
+    AnsiInsertMode
+    // DECAWM, `CSI ? 7 h` — wrap at the right margin.
+    AnsiAutoWrap
+    // DECTCEM, `CSI ? 25 h` — show the cursor.
+    AnsiCursorVisible
+    // `CSI ? 1049 h` — the alternate screen, saving the cursor and
+    // clearing on the way in.  The two older spellings, 47 and 1047,
+    // do not save the cursor; a program that means "full screen"
+    // means this one.
+    AnsiAltScreen
+    // `CSI ? 2004 h` — bracketed paste: pasted text arrives wrapped in
+    // `CSI 200 ~` and `CSI 201 ~`, so an editor can tell a paste from
+    // typing.
+    AnsiBracketedPaste
+    // `CSI ? 1000 h` — report button presses and releases.
+    AnsiMouseClicks
+    // `CSI ? 1002 h` — the above, plus motion while a button is down.
+    AnsiMouseDrag
+    // `CSI ? 1003 h` — the above, plus motion with no button down.
+    AnsiMouseMotion
+    // `CSI ? 1006 h` — report mouse positions in the SGR encoding,
+    // which is the only one that works past column 223.
+    AnsiMouseSgr
+    // `CSI ? 1004 h` — report focus in and out.
+    AnsiFocusEvents
+    // `CSI ? 2026 h` — synchronised output: the terminal holds the
+    // frame until the mode is reset, so a large update cannot tear.
+    AnsiSyncOutput
+    // Any other DEC private mode, by number.
+    AnsiPrivateMode(number: Int)
+    // Any other ANSI mode, by number.
+    AnsiAnsiMode(number: Int)
+
+// set_mode appends SM or DECSET for the mode.
+pub fn set_mode(out: [u8], mode: AnsiMode) -> [u8]
+    todo("ansi-nv.seqwrite.set_mode")
+
+// reset_mode appends RM or DECRST for the mode.
+pub fn reset_mode(out: [u8], mode: AnsiMode) -> [u8]
+    todo("ansi-nv.seqwrite.reset_mode")
+
+// mode_number is the number a mode goes on the wire as, and whether it
+// is a private one.
+pub fn mode_number(mode: AnsiMode) -> Int
+    todo("ansi-nv.seqwrite.mode_number")
+
+// mode_is_private says whether a mode is written with the `?` marker.
+pub fn mode_is_private(mode: AnsiMode) -> Bool
+    todo("ansi-nv.seqwrite.mode_is_private")
+
+// ── Colour and attributes ───────────────────────────────────────────
+
+// sgr appends `CSI <params> m` for a parameter list the caller already
+// has — from `sgr.sgr_transition`, `sgr.sgr_full` or its own
+// arithmetic.
+pub fn sgr(out: [u8], params: [Int]) -> [u8]
+    todo("ansi-nv.seqwrite.sgr")
+
+// sgr_reset appends `CSI 0 m`.
+pub fn sgr_reset(out: [u8]) -> [u8]
+    todo("ansi-nv.seqwrite.sgr_reset")
+
+// sgr_change appends the shortest `CSI m` that takes the terminal from
+// `from` to `to`, and appends nothing at all when the two are equal.
+//
+// The function a renderer calls once per run of cells.  Appending
+// nothing for an unchanged style is the behaviour that matters: a
+// screen update where most cells share a style is mostly this
+// function returning its argument.
+//
+// ```novo
+// use sgr
+// use seqwrite
+//
+// fn main() [io]
+//     let plain = sgr.attrs_default()
+//     let out = seqwrite.sgr_change([], plain, plain)
+//     println(str.from_int(list.len(out)))     // 0 — nothing changed
+// ```
+pub fn sgr_change(out: [u8], from: sgr.SgrAttrs, to: sgr.SgrAttrs) -> [u8]
+    todo("ansi-nv.seqwrite.sgr_change")
+
+// ── Text ────────────────────────────────────────────────────────────
+
+// put_codepoint appends one codepoint, UTF-8 encoded.
+//
+// The one function on the writing side that a device needs and cannot
+// write itself in one line, because the four-branch encoding is where
+// a hand-rolled terminal writer gets a wide character wrong.
+pub fn put_codepoint(out: [u8], ch: Int) -> [u8]
+    todo("ansi-nv.seqwrite.put_codepoint")
+
+// put_text appends a string's bytes unchanged.
+//
+// Unchanged means unchanged: no escaping, no wrapping, no width
+// arithmetic.  A caller with text from somewhere it does not trust
+// wants `put_text_safe`.
+pub fn put_text(out: [u8], text: Str) -> [u8]
+    todo("ansi-nv.seqwrite.put_text")
+
+// put_text_safe appends a string with every C0 control, every C1
+// control and every ESC replaced by a printable stand-in.
+//
+// What a program renders a log line, a filename or a commit message
+// with.  Text from outside the program can contain `ESC ] 52 ; c ;` —
+// a clipboard write — and a renderer that passed it through has handed
+// whoever wrote that text the user's clipboard.  There is no flag for
+// "trust me": a caller that genuinely wants the sequences calls
+// `put_text`, where the name says so.
+pub fn put_text_safe(out: [u8], text: Str) -> [u8]
+    todo("ansi-nv.seqwrite.put_text_safe")
+
+// ── Strings ─────────────────────────────────────────────────────────
+
+// osc appends `OSC <code> ; <payload> <terminator>`.
+//
+// The payload is bytes rather than a string because OSC 52's is base64
+// and OSC 4's is a colour specification, and neither is text this
+// package should have an opinion about.
+pub fn osc(out: [u8], code: Int, payload: [u8], terminator: AnsiStringEnd) -> [u8]
+    todo("ansi-nv.seqwrite.osc")
+
+// AnsiStringEnd is which terminator to write a string sequence with.
+//
+// A separate type from the parser's `AnsiTerminator` on purpose: that
+// one reports what arrived, this one chooses what to send, and the two
+// are not the same decision — a program answering a query echoes the
+// terminator it was asked with, and a program starting an exchange
+// picks ST.
+pub enum AnsiStringEnd
+    AnsiEndWithBel
+    AnsiEndWithSt
+
+// set_title appends OSC 0 — the window title and the icon name
+// together, which is what every terminal actually does with OSC 0, 1
+// and 2.
+pub fn set_title(out: [u8], title: Str) -> [u8]
+    todo("ansi-nv.seqwrite.set_title")
+
+// clipboard_write appends OSC 52 with an already-base64 payload.
+//
+// The base64 is the caller's because a `core` package that grew a
+// base64 encoder for one sequence would be carrying it for every
+// consumer that never writes a clipboard, and base64-nv is a row of
+// its own.
+pub fn clipboard_write(out: [u8], selection: Str, base64_payload: Str) -> [u8]
+    todo("ansi-nv.seqwrite.clipboard_write")
+
+// ── Raw ─────────────────────────────────────────────────────────────
+
+// csi appends `CSI <private> <params> <intermediates> <final>` for a
+// sequence this module does not name.
+//
+// The escape hatch, and it is `pub` on purpose: a package that made
+// its callers choose between "a function I provide" and "raw bytes I
+// hope are right" would get raw bytes. `private` is 0 for none.
+pub fn csi(out: [u8], private: Int, params: [Int], intermediates: [Int], final_byte: Int) -> [u8]
+    todo("ansi-nv.seqwrite.csi")
+
+// esc appends `ESC <intermediates> <final>`.
+pub fn esc(out: [u8], intermediates: [Int], final_byte: Int) -> [u8]
+    todo("ansi-nv.seqwrite.esc")

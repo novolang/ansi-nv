@@ -1,0 +1,187 @@
+// surface_tests.nv — the rest of the published surface, called once
+// each.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: ansi-nv.<module>.<fn>`.  Run
+// with `--isolate` for one verdict per `@test`.
+//
+// WHY THIS FILE EXISTS SEPARATELY.  The two suites beside it assert
+// BEHAVIOUR — a chunk split mid-parameter, an unchanged style costing
+// no bytes.  This one asserts that the surface is callable at all: that
+// every published signature type-checks from outside its own module,
+// with the argument types a consumer would actually pass.  On an
+// interface package that is not a formality, because a signature is
+// the entire product and a name that cannot be called from another
+// module is a name nobody can use — which is a real failure mode on
+// this toolchain and one a suite that only tested the interesting
+// functions would not have found.
+
+use std.test
+use std.list
+use vtparse
+use sgr
+use seqwrite
+use vtquery
+
+@test
+fn test_every_cursor_movement_appends_to_the_buffer() [io]
+    test.case("the relative moves take a count")
+    test.assert(list.len(seqwrite.cursor_up([], 3)) > 0)
+    test.assert(list.len(seqwrite.cursor_down([], 3)) > 0)
+    test.assert(list.len(seqwrite.cursor_forward([], 3)) > 0)
+    test.assert(list.len(seqwrite.cursor_back([], 3)) > 0)
+
+    test.case("the absolute ones take a one-based coordinate")
+    test.assert(list.len(seqwrite.cursor_column([], 1)) > 0)
+    test.assert(list.len(seqwrite.cursor_row([], 1)) > 0)
+
+    test.case("and the line moves carry the column home with them")
+    test.assert(list.len(seqwrite.cursor_next_line([], 1)) > 0)
+    test.assert(list.len(seqwrite.cursor_prev_line([], 1)) > 0)
+
+@test
+fn test_the_cursor_can_be_saved_restored_and_reshaped() [io]
+    test.case("DECSC and DECRC take no arguments")
+    test.assert(list.len(seqwrite.cursor_save([])) > 0)
+    test.assert(list.len(seqwrite.cursor_restore([])) > 0)
+
+    test.case("and every shape DECSCUSR defines is writable")
+    test.assert(list.len(seqwrite.cursor_shape([], AnsiShapeDefault)) > 0)
+    test.assert(list.len(seqwrite.cursor_shape([], AnsiBlinkingBlock)) > 0)
+    test.assert(list.len(seqwrite.cursor_shape([], AnsiSteadyBlock)) > 0)
+    test.assert(list.len(seqwrite.cursor_shape([], AnsiBlinkingUnderline)) > 0)
+    test.assert(list.len(seqwrite.cursor_shape([], AnsiSteadyUnderline)) > 0)
+    test.assert(list.len(seqwrite.cursor_shape([], AnsiBlinkingBar)) > 0)
+    test.assert(list.len(seqwrite.cursor_shape([], AnsiSteadyBar)) > 0)
+
+@test
+fn test_erasing_and_scrolling_are_writable() [io]
+    test.case("every erase mode reaches the display")
+    test.assert(list.len(seqwrite.erase_display([], AnsiEraseToEnd)) > 0)
+    test.assert(list.len(seqwrite.erase_display([], AnsiEraseToStart)) > 0)
+    test.assert(list.len(seqwrite.erase_display([], AnsiEraseAll)) > 0)
+    test.assert(list.len(seqwrite.erase_display([], AnsiEraseScrollback)) > 0)
+
+    test.case("erasing cells moves nothing")
+    test.assert(list.len(seqwrite.erase_chars([], 4)) > 0)
+
+    test.case("the scroll region is set and reset")
+    test.assert(list.len(seqwrite.scroll_region([], 2, 20)) > 0)
+    test.assert(list.len(seqwrite.scroll_region_reset([])) > 0)
+
+    test.case("and the region scrolls in both directions")
+    test.assert(list.len(seqwrite.scroll_up([], 1)) > 0)
+    test.assert(list.len(seqwrite.scroll_down([], 1)) > 0)
+
+@test
+fn test_lines_and_cells_can_be_inserted_and_deleted() [io]
+    test.case("lines")
+    test.assert(list.len(seqwrite.insert_lines([], 1)) > 0)
+    test.assert(list.len(seqwrite.delete_lines([], 1)) > 0)
+
+    test.case("and cells")
+    test.assert(list.len(seqwrite.insert_chars([], 1)) > 0)
+    test.assert(list.len(seqwrite.delete_chars([], 1)) > 0)
+
+@test
+fn test_every_named_mode_can_be_set_and_reset() [io]
+    test.case("the modes a program uses by name")
+    test.assert(list.len(seqwrite.set_mode([], AnsiAutoWrap)) > 0)
+    test.assert(list.len(seqwrite.set_mode([], AnsiBracketedPaste)) > 0)
+    test.assert(list.len(seqwrite.set_mode([], AnsiMouseClicks)) > 0)
+    test.assert(list.len(seqwrite.set_mode([], AnsiMouseDrag)) > 0)
+    test.assert(list.len(seqwrite.set_mode([], AnsiMouseMotion)) > 0)
+    test.assert(list.len(seqwrite.set_mode([], AnsiMouseSgr)) > 0)
+    test.assert(list.len(seqwrite.set_mode([], AnsiFocusEvents)) > 0)
+    test.assert(list.len(seqwrite.set_mode([], AnsiSyncOutput)) > 0)
+
+    test.case("and the two escape hatches, by number")
+    test.assert(list.len(seqwrite.reset_mode([], AnsiPrivateMode(1005))) > 0)
+    test.assert(list.len(seqwrite.reset_mode([], AnsiAnsiMode(20))) > 0)
+
+@test
+fn test_text_and_strings_reach_the_buffer() [io]
+    test.case("text goes out unchanged")
+    test.assert(list.len(seqwrite.put_text([], "hello")) > 0)
+
+    test.case("an OSC carries a code, a payload and a terminator")
+    let payload = [0x41 as u8, 0x42 as u8]
+    test.assert(list.len(seqwrite.osc([], 0, payload, AnsiEndWithBel)) > 0)
+    test.assert(list.len(seqwrite.osc([], 0, payload, AnsiEndWithSt)) > 0)
+
+    test.case("and the two OSCs worth naming have names")
+    test.assert(list.len(seqwrite.set_title([], "novo-lang")) > 0)
+    test.assert(list.len(seqwrite.clipboard_write([], "c", "QUJD")) > 0)
+
+@test
+fn test_the_raw_escape_hatch_is_public() [io]
+    test.case("a CSI nobody named is still writable")
+    test.assert(list.len(seqwrite.csi([], 0x3F, [2026], [], 0x68)) > 0)
+
+    test.case("and so is a plain ESC sequence")
+    test.assert(list.len(seqwrite.esc([], [], 0x63)) > 0)
+
+@test
+fn test_a_colour_serialises_into_all_three_roles() [io]
+    let c = AnsiIndexed(200)
+
+    test.case("foreground")
+    test.assert(list.len(sgr.color_params(c, false, false)) > 0)
+
+    test.case("background")
+    test.assert(list.len(sgr.color_params(c, true, false)) > 0)
+
+    test.case("and the underline colour, which has a family of its own")
+    test.assert(list.len(sgr.color_params(c, false, true)) > 0)
+
+@test
+fn test_a_true_colour_has_a_nearest_palette_entry() [io]
+    test.case("pure black lands on the cube's first entry")
+    test.assert(sgr.nearest_index(SgrRgb { r: 0, g: 0, b: 0 }) == 16)
+
+    test.case("and every answer is inside the palette")
+    let i = sgr.nearest_index(SgrRgb { r: 128, g: 64, b: 200 })
+    test.assert(i >= 16 and i <= 255)
+
+@test
+fn test_the_two_limit_sets_differ_where_it_matters() [io]
+    let loose = vtparse.default_limits()
+    let tight = vtparse.strict_limits()
+
+    test.case("the device's payload ceiling is the smaller one")
+    test.assert(tight.osc_bytes_max < loose.osc_bytes_max)
+    test.assert(tight.dcs_bytes_max < loose.dcs_bytes_max)
+
+    test.case("and so is its parameter count")
+    test.assert(tight.params_max < loose.params_max)
+
+@test
+fn test_the_parser_reports_its_state_and_its_intermediates() [io]
+    let p = vtparse.parser_new()
+
+    test.case("a fresh parser is in the ground state by name")
+    match vtparse.state_of(p)
+        AnsiGround => test.assert(true)
+        _          => test.assert(false)
+
+    test.case("and carries no intermediate bytes")
+    test.assert(vtparse.intermediate_count(p) == 0)
+    test.assert(vtparse.intermediate_at(p, 0) == 0)
+
+@test
+fn test_a_parameter_snapshot_answers_the_same_questions_as_the_parser() [io]
+    let empty = vtparse.params_empty()
+
+    test.case("an empty snapshot holds nothing")
+    test.assert(vtparse.params_count(empty) == 0)
+
+    test.case("and its sub-parameter accessors agree")
+    test.assert(vtparse.params_sub_count(empty, 0) == 0)
+    test.assert(vtparse.params_sub_at(empty, 0, 0, 7) == 7)
+
+@test
+fn test_a_reply_reads_back_off_a_snapshot_as_well_as_a_parser() [io]
+    test.case("the snapshot path takes the same final byte")
+    match vtquery.reply_of_params(vtparse.params_empty(), 0x52)
+        Some(_) => test.assert(false)
+        None    => test.assert(true)

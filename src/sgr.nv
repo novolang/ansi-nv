@@ -1,0 +1,268 @@
+// sgr.nv — what a cell looks like, and the arithmetic that turns a
+// `CSI m` into it and back.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// SGR is the one part of the escape-sequence layer that is a MODEL
+// rather than a command: `CSI 1 m` does not do anything, it changes
+// what the next character will look like.  So this module is a struct
+// of what a cell can be, a fold of parameters onto it, and — the half
+// most implementations leave out — the inverse: given the attributes a
+// terminal is currently in and the ones it should be in, the shortest
+// parameter list that gets there.  A renderer that emits a full reset
+// before every cell works and is four times the bytes.
+//
+// THE THREE COLOUR FORMS ARE ONE TYPE.  `AnsiColor` covers the 16
+// named colours (as indices 0..15), the 256-colour cube, 24-bit RGB
+// and "whatever the terminal's default is", because a cell holds
+// exactly one of the four and code that branched on which form it was
+// would branch in every function that touches a colour.  What differs
+// between the forms is only how they SERIALISE, which is
+// `color_params`' problem and nobody else's.
+//
+// WHAT IS DELIBERATELY NOT HERE.  A palette.  Indices 0..15 are the
+// terminal's own sixteen and no library can know what they are — a
+// user's theme decides — so `indexed_to_rgb` answers for 16..255,
+// where the values are fixed by the specification, and returns `None`
+// below that.  A caller that wants the low sixteen supplies them; that
+// is a configuration, not arithmetic.
+
+use vtparse
+
+// AnsiColor is one cell's foreground, background or underline colour.
+//
+// `AnsiIndexed` covers both the named sixteen (0..15) and the
+// 256-colour cube (16..255), because on the wire they are the same
+// field and separating them would make every consumer join them back
+// up.
+pub enum AnsiColor
+    // Whatever the terminal was configured with — SGR 39, 49 and 59.
+    // Not a colour this package can name, which is the point: a
+    // renderer that resolved it to a concrete RGB would stop tracking
+    // a theme change.
+    AnsiDefaultColor
+    // A palette index, 0..255.  0..7 are the named colours, 8..15
+    // their bright forms, 16..231 the 6x6x6 cube, 232..255 the greys.
+    AnsiIndexed(index: Int)
+    // 24-bit colour, each channel 0..255.
+    AnsiTrueColor(r: Int, g: Int, b: Int)
+
+// SgrUnderline is which of the underline styles a cell carries.
+//
+// A separate type from the boolean flags because the five styles are
+// mutually exclusive — SGR `4:3` replaces `4:1` rather than adding to
+// it — and because a `Bool` here is what makes a terminal draw a
+// straight line under a spelling mistake.
+pub enum SgrUnderline
+    SgrNoUnderline
+    // SGR 4, or 4:1.
+    SgrSingleUnderline
+    // SGR 21, or 4:2.  The overload of 21 with "bold off" is why 4:2
+    // exists, and why this package emits 4:2.
+    SgrDoubleUnderline
+    // SGR 4:3 — what a spell checker uses.
+    SgrCurlyUnderline
+    // SGR 4:4.
+    SgrDottedUnderline
+    // SGR 4:5.
+    SgrDashedUnderline
+
+// SgrRgb is a colour resolved to its three channels.
+//
+// The return of `indexed_to_rgb`, and nothing else uses it — a cell
+// holds an `AnsiColor`, not this.
+pub struct SgrRgb
+    r: Int
+    g: Int
+    b: Int
+
+// SgrAttrs is everything SGR can say about one cell.
+//
+// A flat struct of flags rather than a packed integer, and that is a
+// deliberate trade the reader should see: novo-vte packs the same
+// information into two 64-bit words and pays for it in every accessor,
+// which is right for a grid of a hundred thousand cells and wrong for
+// a published interface where the field name is the documentation.  A
+// consumer that needs the packing writes it over this.
+pub struct SgrAttrs
+    fg: AnsiColor
+    bg: AnsiColor
+    // SGR 58 / 59 — the colour of the underline, independent of the
+    // foreground.  Terminals that do not support it ignore it, which
+    // is why it is a colour rather than an option.
+    underline_color: AnsiColor
+    // SGR 1.  Separate from `dim`, because SGR 22 clears both and 1
+    // and 2 can both be set.
+    bold: Bool
+    // SGR 2.
+    dim: Bool
+    // SGR 3.
+    italic: Bool
+    underline: SgrUnderline
+    // SGR 5 and 6 folded into one flag: no terminal in use
+    // distinguishes slow from rapid blink, and a program that asked
+    // for rapid got slow.
+    blink: Bool
+    // SGR 7 — swap foreground and background at draw time.  Kept as a
+    // flag rather than applied to the two colours, because SGR 27
+    // has to be able to undo it.
+    inverse: Bool
+    // SGR 8 — drawn as the background colour.
+    hidden: Bool
+    // SGR 9.
+    strike: Bool
+    // SGR 53.
+    overline: Bool
+
+// attrs_default is a cell with the terminal's own colours and no
+// styling — what SGR 0 resets to.
+pub fn attrs_default() -> SgrAttrs
+    todo("ansi-nv.sgr.attrs_default")
+
+// attrs_eq says whether two attribute sets would render identically.
+//
+// Used by a renderer to decide whether a cell needs a transition at
+// all, which is the single largest saving in a screen update: most
+// runs of cells share their attributes.
+pub fn attrs_eq(a: SgrAttrs, b: SgrAttrs) -> Bool
+    todo("ansi-nv.sgr.attrs_eq")
+
+// apply_sgr folds a whole `CSI m` parameter list onto an attribute
+// set.
+//
+// The parameter list is taken as one value rather than one number at a
+// time because SGR is not a list of independent settings: 38 and 48
+// consume the parameters after them, in either the semicolon form
+// (`38;2;R;G;B`) or the colon form (`38:2::R:G:B`), and a fold that
+// saw one number at a time could not tell a colour's blue channel
+// from a request for italics.
+//
+// An empty parameter list means SGR 0 — `CSI m` is a reset — which is
+// the case a `for` loop over an empty list gets wrong.
+//
+// ```novo
+// use vtparse
+// use sgr
+//
+// fn main() [io]
+//     let a = sgr.apply_sgr(sgr.attrs_default(), vtparse.params_empty())
+//     if a.bold
+//         println("bold")
+//     else
+//         println("an empty parameter list is a reset")
+// ```
+pub fn apply_sgr(a: SgrAttrs, params: vtparse.AnsiParams) -> SgrAttrs
+    todo("ansi-nv.sgr.apply_sgr")
+
+// apply_sgr_one folds one SGR number that takes no arguments onto an
+// attribute set.
+//
+// For a caller that has its own parameter walk and only wants the
+// meaning of a single number.  It cannot express 38, 48 or 58, which
+// consume what follows them — those return the attributes unchanged,
+// and `apply_sgr` is the entry point that handles them.
+pub fn apply_sgr_one(a: SgrAttrs, code: Int) -> SgrAttrs
+    todo("ansi-nv.sgr.apply_sgr_one")
+
+// SgrColorRead is a colour read out of a parameter list, and how many
+// parameters it took.
+//
+// The count is the whole reason this is a struct: `38;2;1;2;3` and
+// `38:2::1:2:3` are the same colour and consume a different number of
+// parameters, and a caller that assumed either would mis-read the rest
+// of the sequence.
+pub struct SgrColorRead
+    color: AnsiColor
+    // How many entries of the parameter list the colour occupied,
+    // counting the 38, 48 or 58 that introduced it.
+    consumed: Int
+
+// read_extended_color reads a 38, 48 or 58 colour beginning at
+// parameter `at`.
+//
+// `None` when the parameters at that position are not an extended
+// colour — a truncated `38;2;1` or an unknown colour space.  Both
+// spellings are accepted: the semicolon form xterm shipped and the
+// colon form ITU-T T.416 defines, including the empty colour-space
+// slot in `38:2::R:G:B`.
+pub fn read_extended_color(params: vtparse.AnsiParams, at: Int) -> ?SgrColorRead
+    todo("ansi-nv.sgr.read_extended_color")
+
+// sgr_transition is the shortest parameter list that takes a terminal
+// from one attribute set to another.
+//
+// The half of SGR that makes a screen update cheap, and the half most
+// implementations skip.  It emits a reset only when one is genuinely
+// shorter than the individual clears — turning off bold, italic and a
+// colour is three parameters, and a reset plus the four that survive
+// is five.
+//
+// Returns the parameters, not the bytes: `seqwrite.sgr` puts them on
+// the wire, and a caller that is building its own sequence may want
+// the numbers.
+pub fn sgr_transition(from: SgrAttrs, to: SgrAttrs) -> [Int]
+    todo("ansi-nv.sgr.sgr_transition")
+
+// sgr_full is the parameter list that produces an attribute set from
+// scratch, beginning with the 0 that resets.
+//
+// What a renderer emits at the start of a line it is redrawing whole,
+// where the terminal's current attributes are unknown.
+pub fn sgr_full(a: SgrAttrs) -> [Int]
+    todo("ansi-nv.sgr.sgr_full")
+
+// color_params is the parameters one colour serialises to, in the
+// given role.
+//
+// `is_background` picks between the 3x/4x families, and the underline
+// colour has a family of its own (58/59) — three roles, one function,
+// because the three differ by a constant.
+pub fn color_params(c: AnsiColor, is_background: Bool, is_underline: Bool) -> [Int]
+    todo("ansi-nv.sgr.color_params")
+
+// indexed_to_rgb is the RGB a palette index above 15 stands for.
+//
+// `None` for 0..15 and for anything outside 0..255.  The low sixteen
+// are the terminal's own and a library cannot know them; 16..231 are
+// the 6x6x6 cube with the levels 0, 95, 135, 175, 215, 255, and
+// 232..255 are the 24 greys from 8 to 238 in steps of 10.  Those two
+// tables are fixed by the specification, which is the whole of why
+// this function can exist and the reason the low sixteen are not part
+// of it.
+pub fn indexed_to_rgb(index: Int) -> ?SgrRgb
+    todo("ansi-nv.sgr.indexed_to_rgb")
+
+// nearest_index is the palette index above 15 that is closest to an
+// RGB value.
+//
+// For a renderer that has 24-bit colours and a terminal that has 256.
+// It searches the cube and the greys and takes whichever is closer in
+// squared distance, which is what every terminal multiplexer does and
+// what makes a downgraded colour look like the colour rather than like
+// a neighbour.
+pub fn nearest_index(c: SgrRgb) -> Int
+    todo("ansi-nv.sgr.nearest_index")
+
+// downgrade reduces a colour to what a terminal of the given depth can
+// show.
+//
+// The three depths are the three answers `TERM` and `COLORTERM` give,
+// and asking for one this terminal cannot render is how a program ends
+// up printing the parameters as text on a terminal that ignored them.
+// Which depth is available is a `host` question — the environment —
+// and the answer arrives here as an argument.
+pub fn downgrade(c: AnsiColor, depth: SgrDepth) -> AnsiColor
+    todo("ansi-nv.sgr.downgrade")
+
+// SgrDepth is how many colours the terminal on the other end can
+// actually show.
+pub enum SgrDepth
+    // No colour at all: every colour becomes `AnsiDefaultColor`, and
+    // `inverse` is what is left to distinguish anything with.
+    SgrNoColor
+    // The named sixteen.
+    SgrDepth16
+    // The 256-colour cube.
+    SgrDepth256
+    // 24-bit.
+    SgrDepthTrue

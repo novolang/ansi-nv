@@ -1,0 +1,163 @@
+// vtquery.nv — the questions a program asks a terminal, and the
+// answers read back off the parser.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// A QUERY IS TWO HALVES AND A DEADLOCK.  A program writes `CSI 6 n`
+// and the terminal writes `CSI <row> ; <col> R` back — on the INPUT
+// stream, mixed in with whatever the user is typing.  So the two
+// halves live in different places: `write_query` builds the question
+// into the caller's buffer, and `reply_of` reads the answer out of a
+// CSI dispatch the ordinary parser produced.  Nothing here waits, and
+// nothing here reads, because a `core` package cannot do either and
+// because the caller is the only party that knows what to do when the
+// answer never comes.
+//
+// THE ANSWER MAY NEVER COME, and that is the interface's real subject.
+// A terminal that does not implement a query does not say so — it
+// stays silent, and a program that blocked on the reply hangs.  Every
+// consumer therefore needs a timeout, and the timeout is the host's:
+// this package's contribution is that a reply is RECOGNISABLE when it
+// arrives, so the host's read loop can hand every dispatch here and
+// act on the ones that are answers.
+//
+// WHY IT IS NOT IN keymap-nv.  A reply arrives on the same stream as
+// the keys and looks exactly like one — `CSI 1 ; 1 R` is a reply and
+// `CSI 1 ; 5 R` is not a key but could be mistaken for one by a
+// decoder that had never heard of DSR.  Both packages therefore have
+// to know the shape.  It lives here because a reply is a terminal's
+// answer to something this package's writer asked, and keymap-nv
+// reports an unrecognised CSI rather than guessing.
+
+use vtparse
+use seqwrite
+
+// AnsiQuery is something a program can ask the terminal.
+//
+// Only the queries with a defined, parseable answer are here.  A
+// terminal has dozens more; the ones whose replies are free-form
+// strings belong to whoever is parsing that string, and `seqwrite.csi`
+// is how they get asked.
+pub enum AnsiQuery
+    // DSR 6, `CSI 6 n` — where is the cursor?  The one query almost
+    // every terminal answers, and the one a program uses to find the
+    // window size when it has no other way to ask.
+    AnsiCursorPositionQuery
+    // DSR 5, `CSI 5 n` — are you there?  A terminal answers
+    // `CSI 0 n`, and the value is that a program can tell a live
+    // terminal from a pipe without a system call.
+    AnsiDeviceStatusQuery
+    // Primary DA, `CSI c` — what are you?  The answer names the
+    // terminal class and its options.
+    AnsiDeviceAttributesQuery
+    // Secondary DA, `CSI > c` — what version are you?  How a program
+    // tells one emulator from another when it has to.
+    AnsiSecondaryAttributesQuery
+    // `CSI 1 8 t` — how many rows and columns is the text area?  A
+    // fallback for a program with no `TIOCGWINSZ`, and the answer a
+    // terminal multiplexer sometimes gets wrong.
+    AnsiTextAreaSizeQuery
+    // DECRQM, `CSI ? <mode> $ p` — is this mode set?  The only
+    // reliable way to ask whether a terminal supports synchronised
+    // output before using it.
+    AnsiModeQuery(mode: seqwrite.AnsiMode)
+
+// AnsiModeSetting is DECRPM's five answers.
+//
+// "Not recognised" and "reset" are different answers and a program
+// that folded them would enable a feature the terminal has never heard
+// of: an unrecognised mode reports 0, and a supported one that happens
+// to be off reports 2.
+pub enum AnsiModeSetting
+    // 0 — the terminal does not know this mode.
+    AnsiModeUnknown
+    // 1 — set.
+    AnsiModeIsSet
+    // 2 — reset.
+    AnsiModeIsReset
+    // 3 — permanently set; the terminal will not turn it off.
+    AnsiModeAlwaysSet
+    // 4 — permanently reset.
+    AnsiModeAlwaysReset
+
+// AnsiReply is a terminal's answer, read back into a value.
+pub enum AnsiReply
+    // CPR — `CSI <row> ; <col> R`, both one-based.
+    AnsiCursorPositionReply(row: Int, col: Int)
+    // DSR — `CSI 0 n`, the terminal saying it is there.
+    AnsiDeviceOkReply
+    // Primary DA — `CSI ? <class> ; <options> c`.  The options are
+    // kept as a list because their meaning is per-class and a program
+    // that cares is looking for one number in it.
+    AnsiDeviceAttributesReply(class: Int, options: [Int])
+    // Secondary DA — `CSI > <kind> ; <version> ; <patch> c`.
+    AnsiSecondaryAttributesReply(kind: Int, version: Int, patch: Int)
+    // `CSI 8 ; <rows> ; <cols> t`, the answer to the text-area query.
+    AnsiTextAreaSizeReply(rows: Int, cols: Int)
+    // DECRPM — `CSI ? <mode> ; <setting> $ y`.
+    AnsiModeReply(mode: Int, setting: AnsiModeSetting)
+
+// write_query appends the question to the caller's buffer.
+//
+// ```novo
+// use vtquery
+//
+// fn main() [io]
+//     let out = vtquery.write_query([], AnsiCursorPositionQuery)
+//     // `out` now holds `CSI 6 n`.  Writing it is the caller's job,
+//     // and so is deciding how long to wait for the answer.
+//     println(str.from_int(list.len(out)))
+// ```
+pub fn write_query(out: [u8], q: AnsiQuery) -> [u8]
+    todo("ansi-nv.vtquery.write_query")
+
+// reply_of reads a CSI dispatch back into a typed reply.
+//
+// `None` when the dispatch is not one of the six answers — which is
+// most dispatches, because this function is meant to be called on
+// every one and to say no cheaply.  The parser is passed rather than a
+// snapshot so that a caller on the byte path pays nothing.
+//
+// ```novo
+// use vtparse
+// use vtquery
+//
+// fn main() [io]
+//     var p = vtparse.parser_new()
+//     for b in [0x1B, 0x5B, 0x31, 0x32, 0x3B, 0x34, 0x30, 0x52]
+//         let step = vtparse.feed_byte(p, b)
+//         p = step.parser
+//         match step.action
+//             AnsiCsiDispatch(f) =>
+//                 match vtquery.reply_of(step.parser, f)
+//                     Some(AnsiCursorPositionReply(row, col)) =>
+//                         println(str.from_int(row))
+//                         println(str.from_int(col))
+//                     _ => println("not a reply")
+//             _ => println("consumed")
+// ```
+pub fn reply_of(p: vtparse.AnsiParser, final_byte: Int) -> ?AnsiReply
+    todo("ansi-nv.vtquery.reply_of")
+
+// reply_of_params is `reply_of` over a parameter snapshot, for a
+// caller working from `feed`'s drained calls rather than from the
+// parser.
+pub fn reply_of_params(params: vtparse.AnsiParams, final_byte: Int) -> ?AnsiReply
+    todo("ansi-nv.vtquery.reply_of_params")
+
+// answers says whether a reply is an answer to a particular query.
+//
+// A program with more than one query in flight needs to match them up,
+// and matching on the variant is not enough: two DECRQMs for different
+// modes come back as two `AnsiModeReply`s that differ only in a field.
+pub fn answers(q: AnsiQuery, r: AnsiReply) -> Bool
+    todo("ansi-nv.vtquery.answers")
+
+// write_reply appends the answer a TERMINAL would send.
+//
+// The mirror of `write_query`, and it is here because the package is
+// meant to be usable from both ends: a terminal emulator built on this
+// parser has to answer the queries its child asks, and a test that
+// feeds a program a synthetic terminal has to produce them.
+pub fn write_reply(out: [u8], r: AnsiReply) -> [u8]
+    todo("ansi-nv.vtquery.write_reply")

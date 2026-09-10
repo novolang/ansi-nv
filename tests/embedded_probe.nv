@@ -1,0 +1,86 @@
+// embedded_probe.nv — this package's device claim, as a program that
+// either builds for a Cortex-M or does not.
+//
+// It is not a test.  `scripts/shard_audit.sh`'s `core-embedded` row
+// copies it and the modules it names into a package of its own and runs
+//
+//   novo build --target=nrf52-qemu src/probe.nv
+//
+// which produces a real Cortex-M4 ELF or fails.
+//
+// WHY THE CLAIM IS WORTH MAKING HERE.  A device that drives a serial
+// console needs exactly this package and can afford nothing more: the
+// parser is a state machine over one byte, the writer appends digits to
+// a buffer, and neither consults a clock, an allocator or a file
+// descriptor.  A firmware that renders a status line over UART is the
+// whole of this package's embedded audience, and it is a real one.
+//
+// WHICH MODULES GO IN.  `vtparse` and `seqwrite`, and `sgr` through
+// `seqwrite`'s use of it — the whole package, because there is no host
+// half to leave behind.  `vtquery` comes in with `seqwrite` too.
+//
+// WHAT THE TIER ACTUALLY CHECKS on an interface package is narrower
+// than it will be on the implementation, and saying so is more useful
+// than pretending otherwise: every body here is a `todo()`, so what
+// links today is the SIGNATURES and the types — a `[Int]` field, a
+// `?Int` return, a nested enum in a match arm.  The list-shaped fields
+// on `AnsiParser` will have to become a fixed-capacity buffer before
+// any of it can run on a device, and heapless-nv is where that comes
+// from.  That is a known cost of the implementation step, not a
+// surprise waiting in it.
+
+use vtparse
+use seqwrite
+
+// Every answer this probe checks, folded into one number so a single
+// comparison decides the run.  A firmware image has one line of
+// output; making it depend on all of them is what stops a passing run
+// from meaning "the first call linked".
+@tier(rt)
+fn score() -> Int
+    var n = 0
+    // The parser as a value, fed one byte, with the parameters read
+    // back off the parser the dispatch came with.
+    let p = vtparse.parser_with(vtparse.strict_limits())
+    let step = vtparse.feed_byte(p, 0x1B)
+    match step.action
+        AnsiNothing        =>
+            n = n + 1
+        AnsiPrint(_)       =>
+            n = n + 2
+        AnsiCsiDispatch(_) =>
+            n = n + 3
+        _                  =>
+            n = n + 4
+    if vtparse.param_at(step.parser, 0, 1) == 1
+        n = n + 1
+    if vtparse.is_settled(step.parser)
+        n = n + 1
+    if vtparse.private_marker_of(step.parser) == vtparse.NO_PRIVATE_MARKER
+        n = n + 1
+    if vtparse.sub_at(step.parser, 0, 0, 0) == 0
+        n = n + 1
+    // The writer, appending into a buffer the caller holds.
+    let out = seqwrite.cursor_to([], 1, 1)
+    let out2 = seqwrite.erase_line(out, AnsiEraseToEnd)
+    let out3 = seqwrite.put_codepoint(out2, 0x41)
+    if seqwrite.mode_number(AnsiCursorVisible) == 25
+        n = n + 1
+    if seqwrite.mode_is_private(AnsiInsertMode) == false
+        n = n + 1
+    n
+
+@tier(rt)
+fn main() [hw, time]
+    bsp.board.init()
+    // 7 is the number of checks in `score` on the path a linked build
+    // takes.  The count is printed on a failure rather than only
+    // compared, so a device that disagrees with the host says HOW MANY
+    // it lost and a bisect has somewhere to start.
+    let n = score()
+    if n == 7
+        hal.uart.write("PASS: ansi-embedded\n")
+    else
+        hal.uart.write("FAIL: ansi-embedded\n")
+    loop
+        core.rt.sleep_ms(1000)
