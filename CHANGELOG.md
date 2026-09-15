@@ -5,6 +5,11 @@ All notable changes to ansi-nv are recorded here. The format is
 package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 with the pre-1.0 rule that a breaking change bumps the MINOR number.
 
+## 0.0.2 — 2026-09-15
+
+README rewritten to the package README style guide
+(docs/writing-a-readme.md); no change to the interface.
+
 ## 0.0.1 — 2026-09-10
 
 The **interface**: every signature and every effect row, and no bodies.
@@ -50,3 +55,20 @@ The **interface**: every signature and every effect row, and no bodies.
   does not build at `@tier(embedded)`, and shaping the package around
   `?T` and a payload-carrying enum costs nothing here because the
   parser genuinely never fails — it only refuses.
+
+### Design notes
+
+Public type and variant names are unique across a whole program, so a
+package's names have to be unique across the registry too. That is why
+every type here is prefixed. `Parser` was unavailable because novo-vte
+declares it, `Error` is a standard-library trait, and `Action`, `State`,
+`Style` and `Color` are names several terminal packages would each want.
+Enum variants collide by their bare name, so `AnsiPrint` and
+`AnsiExecute` carry the prefix as well. The modules are named `vtparse`,
+`sgr`, `seqwrite` and `vtquery` for the same reason: novo-vte ships
+`src/parser.nv`, and two dependencies of one program may not both ship a
+module of the same name.
+
+`AnsiTerminator` and `seqwrite.AnsiStringEnd` are two types for the two
+endings a string sequence can have, because reporting what arrived and
+choosing what to send are different decisions.
