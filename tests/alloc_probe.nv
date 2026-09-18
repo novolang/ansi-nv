@@ -1,0 +1,72 @@
+// alloc_probe.nv — the program whose emitted LLVM is read for
+// `novo_alloc`, in crypto-nv's shape.
+//
+// It is not a test.  Build it and read the IR:
+//
+//   novo build --opt=0 tests/alloc_probe.nv -o /tmp/alloc_probe
+//   python3 scripts/alloc_scan.py
+//
+// `--opt=0` is the point.  At the default level the whole thing
+// inlines into `novo_main`, there is nothing left to attribute an
+// allocation to, and an assertion that a path does not allocate would
+// pass because the path is no longer there.
+//
+// WHAT THE SCAN SAYS TODAY, AND IT IS NOT "NOTHING".  Feeding one byte
+// costs exactly TWO refcounted boxes on every path, the ground state
+// included: one `AnsiParser` and one `AnsiStep`.  Nothing else — no
+// list is touched, no string is built, no parameter buffer grows —
+// until a CSI's parameters actually arrive, at which point the three
+// `[Int]` fields grow as well.
+//
+// WHY, AND WHAT WOULD REMOVE IT.  A `@value` struct lives on the stack
+// and is not allocated at all (SPEC § 14.4), and `AnsiParser` cannot
+// be one: `@value` fields are restricted to scalars and other `@value`
+// structs (§ 14.2), and `AnsiParser.values`, `.groups` and
+// `.intermediates` are `[Int]` — the shape the interface was
+// published with.  `AnsiStep` carries an `AnsiParser`, so it is boxed
+// for the same reason.  Turning those three fields into heapless-nv's
+// fixed-capacity buffer makes both `@value` and the feed path
+// genuinely allocation-free; it is a breaking change to a struct seven
+// packages depend on, so it waits for the minor that makes it.  The
+// interface release said as much in its own CHANGELOG under "the
+// device claim covers the signatures, not yet the storage", and this
+// probe is what turns that sentence into a number anyone can re-read.
+//
+// The counts are printed rather than checked; the suites own
+// correctness.  This one is here to be read as text.
+
+use vtparse
+
+// The path the claim is about: bytes that never open a sequence.
+//
+// One `AnsiParser` in, one out, and the only thing that changes is a
+// handful of integer fields.  No list is touched on any arm of this.
+fn ground_path(p: vtparse.AnsiParser, b: Int) -> Int
+    let step = vtparse.feed_byte(p, b)
+    match step.action
+        AnsiPrint(ch)  => ch
+        AnsiExecute(c) => c
+        AnsiNothing    => 0
+        AnsiRefused(_) => 0 - 1
+        _              => 0 - 2
+
+// The path that grows the parameter buffers, here so that the IR shows
+// the difference rather than the package claiming there is none.
+fn param_path(p: vtparse.AnsiParser, b: Int) -> Int
+    let step = vtparse.feed_byte(p, b)
+    vtparse.param_at(step.parser, 0, 1)
+
+fn main() [io]
+    var p = vtparse.parser_new()
+    var acc = 0
+    // Printable ASCII, a C0 control, and a three-byte codepoint fed a
+    // byte at a time — the whole ground-state path.
+    for b in [0x41, 0x0A, 0xE2, 0x82, 0xAC, 0x1B]
+        acc = acc + ground_path(p, b)
+        p = vtparse.feed_byte(p, b).parser
+    println("${acc}")
+    // And a parameter list, which grows three lists as well.
+    var q = vtparse.parser_new()
+    for b in [0x1B, 0x5B, 0x32, 0x3B, 0x31, 0x48]
+        q = vtparse.feed_byte(q, b).parser
+    println("${param_path(q, 0x41)}")

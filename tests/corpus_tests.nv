@@ -1,0 +1,800 @@
+// corpus_tests.nv — novo-vte's parser corpus, ported to the actions
+// this package returns, plus the transitions Williams' diagram
+// publishes and the refusal for every limit.
+//
+// WHERE THE CASES COME FROM.  The first block is
+// `orbit/novo-vte/tests/parser_tests.nv`, one case at a time.  Those
+// tests assert what a GRID looked like after a sequence — a character
+// at a cell, a cursor at a column — because novo-vte's parser mutates
+// a grid as it reads.  This package has no grid, so each case is
+// re-asserted at the layer it actually tested: the dispatch that came
+// out, its final byte, and the parameters it came with.  A case that
+// only ever tested `grid.nv` (a scroll region clamping, a wrap at the
+// right margin) is NOT here, because it did not test the parser.
+//
+// The second block is the state diagram itself — every transition the
+// published `AnsiState` names, entered and left — and the third is one
+// case per `AnsiFault`, because a limit nobody tests is a limit that
+// is wrong.
+//
+// The row on every `@test` is `[io]`, for `test.case` and nothing
+// else, which is the standing check that the parser is `[]`.
+
+use std.test
+use std.list
+use vtparse
+
+// ── Helpers ─────────────────────────────────────────────────────────
+
+// Feed every byte and hand back the last step.
+fn drive(bytes: [Int]) -> vtparse.AnsiStep
+    drive_with(vtparse.default_limits(), bytes)
+
+// The same under limits of the caller's choosing.
+fn drive_with(limits: vtparse.AnsiLimits, bytes: [Int]) -> vtparse.AnsiStep
+    var p = vtparse.parser_with(limits)
+    var last = vtparse.feed_byte(p, 0x00)
+    for b in bytes
+        last = vtparse.feed_byte(p, b)
+        p = last.parser
+    last
+
+// The parser after a run of bytes, which is not the same question as
+// the last step's parser only when nothing was fed.
+fn parser_after(bytes: [Int]) -> vtparse.AnsiParser
+    drive(bytes).parser
+
+// One small integer per action shape, so a whole run can be compared
+// as a list.
+fn kind_of(a: vtparse.AnsiAction) -> Int
+    match a
+        AnsiNothing        => 0
+        AnsiPrint(_)       => 1
+        AnsiExecute(_)     => 2
+        AnsiEscDispatch(_) => 3
+        AnsiCsiDispatch(_) => 4
+        AnsiOscStart       => 5
+        AnsiOscPut(_)      => 6
+        AnsiOscEnd(_)      => 7
+        AnsiDcsStart(_)    => 8
+        AnsiDcsPut(_)      => 9
+        AnsiDcsEnd(_)      => 10
+        AnsiRefused(_)     => 11
+
+// The kinds a run produced, in order.
+fn kinds(bytes: [Int]) -> [Int]
+    var p = vtparse.parser_new()
+    var out: [Int] = []
+    for b in bytes
+        let step = vtparse.feed_byte(p, b)
+        p = step.parser
+        out = list.push(out, kind_of(step.action))
+    out
+
+// How many actions of one kind a run produced.
+fn count_kind(bytes: [Int], want: Int) -> Int
+    var n = 0
+    for k in kinds(bytes)
+        if k == want
+            n = n + 1
+    n
+
+// One small integer per state, for the walk below.
+fn state_code(s: vtparse.AnsiState) -> Int
+    match s
+        AnsiGround             => 0
+        AnsiEscape             => 1
+        AnsiEscapeIntermediate => 2
+        AnsiCsiEntry           => 3
+        AnsiCsiParam           => 4
+        AnsiCsiIntermediate    => 5
+        AnsiCsiIgnore          => 6
+        AnsiOscString          => 7
+        AnsiDcsParam           => 8
+        AnsiDcsPassthrough     => 9
+        AnsiIgnoredString      => 10
+        AnsiUtf8Continuation   => 11
+
+// The final byte of a dispatch, or -1 for anything else.
+fn final_of(a: vtparse.AnsiAction) -> Int
+    match a
+        AnsiCsiDispatch(f) => f
+        AnsiEscDispatch(f) => f
+        AnsiDcsStart(f)    => f
+        _                  => 0 - 1
+
+// The fault a refusal named, or -1.
+fn fault_of(a: vtparse.AnsiAction) -> Int
+    match a
+        AnsiRefused(why) =>
+            match why
+                AnsiTooManyParams        => 0
+                AnsiTooManySubParams     => 1
+                AnsiParamTooLarge        => 2
+                AnsiTooManyIntermediates => 3
+                AnsiOscTooLong           => 4
+                AnsiDcsTooLong           => 5
+                AnsiBadUtf8              => 6
+        _                => 0 - 1
+
+// The first fault a run produced, or -1.
+fn first_fault(limits: vtparse.AnsiLimits, bytes: [Int]) -> Int
+    var p = vtparse.parser_with(limits)
+    var found = 0 - 1
+    for b in bytes
+        let step = vtparse.feed_byte(p, b)
+        p = step.parser
+        if found < 0
+            found = fault_of(step.action)
+    found
+
+// ── novo-vte's corpus ───────────────────────────────────────────────
+
+@test
+fn test_printable_text_comes_out_one_codepoint_at_a_time() [io]
+    // novo-vte: test_printable_routes_to_put_char, which asserted 'H',
+    // 'i' and '!' at three cells.  Here they are three prints.
+    test.case("three printable bytes are three prints")
+    test.assert(count_kind([0x48, 0x69, 0x21], 1) == 3)
+
+    test.case("and the last of them carries its own codepoint")
+    match drive([0x48, 0x69, 0x21]).action
+        AnsiPrint(ch) => test.assert(ch == 0x21)
+        _             => test.assert(false)
+
+@test
+fn test_lf_and_cr_are_executes_rather_than_prints() [io]
+    // novo-vte: test_lf_and_cr_navigate_rows.  What the parser decided
+    // there was that LF and CR act; where the cursor went was the
+    // grid's answer and is not this package's business.
+    test.case("LF, CR, BS and HT all execute")
+    test.assert(count_kind([0x0A, 0x0D, 0x08, 0x09], 2) == 4)
+
+    test.case("and BEL executes too rather than being dropped")
+    match drive([0x07]).action
+        AnsiExecute(c) => test.assert(c == 0x07)
+        _              => test.assert(false)
+
+@test
+fn test_cup_carries_both_coordinates() [io]
+    // novo-vte: test_csi_cup_absolute_cursor — `ESC [ 3 ; 5 H`.
+    let step = drive([0x1B, 0x5B, 0x33, 0x3B, 0x35, 0x48])
+
+    test.case("the dispatch is on 'H'")
+    test.assert(final_of(step.action) == 0x48)
+
+    test.case("and the two coordinates are one-based, as they arrived")
+    test.assert(vtparse.param_at(step.parser, 0, 1) == 3)
+    test.assert(vtparse.param_at(step.parser, 1, 1) == 5)
+
+    test.case("`ESC [ 3 ; 5 f` is HVP and dispatches the same way")
+    test.assert(final_of(drive([0x1B, 0x5B, 0x33, 0x3B, 0x35, 0x66]).action) == 0x66)
+
+@test
+fn test_a_relative_move_with_no_parameter_leaves_the_default_to_the_caller() [io]
+    // novo-vte: test_csi_cuf_default_param_is_1.  The parser there
+    // resolved the default itself; here the FALLBACK is the caller's
+    // argument, which is the whole reason `param_at` takes one.
+    let step = drive([0x1B, 0x5B, 0x43])
+
+    test.case("CUF arrived with no parameters at all")
+    test.assert(vtparse.param_count(step.parser) == 0)
+
+    test.case("so CUU's default of 1 and ED's default of 0 both come out right")
+    test.assert(vtparse.param_at(step.parser, 0, 1) == 1)
+    test.assert(vtparse.param_at(step.parser, 0, 0) == 0)
+
+@test
+fn test_cub_carries_the_count_it_was_given() [io]
+    // novo-vte: test_csi_cub_with_param — `ESC [ 2 D`.
+    let step = drive([0x1B, 0x5B, 0x32, 0x44])
+    test.case("back two columns")
+    test.assert(final_of(step.action) == 0x44)
+    test.assert(vtparse.param_at(step.parser, 0, 1) == 2)
+
+@test
+fn test_ed_and_el_arrive_with_their_modes() [io]
+    // novo-vte: test_csi_ed_mode_2_clears_display and
+    // test_csi_el_mode_0_from_cursor.
+    let ed = drive([0x1B, 0x5B, 0x32, 0x4A])
+    test.case("`ESC [ 2 J` is ED with mode 2")
+    test.assert(final_of(ed.action) == 0x4A)
+    test.assert(vtparse.param_at(ed.parser, 0, 0) == 2)
+
+    let el = drive([0x1B, 0x5B, 0x4B])
+    test.case("and a bare `ESC [ K` is EL with the caller's default of 0")
+    test.assert(final_of(el.action) == 0x4B)
+    test.assert(vtparse.param_at(el.parser, 0, 0) == 0)
+
+@test
+fn test_every_csi_novo_vte_interpreted_still_dispatches() [io]
+    // novo-vte's header lists the finals its `dispatch_csi` had an arm
+    // for.  Every one of them has to reach a caller here, because the
+    // caller is now the one with the arms.
+    let finals = [0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x4A, 0x4B,
+                  0x4C, 0x4D, 0x50, 0x53, 0x54, 0x58, 0x40, 0x60, 0x61, 0x64,
+                  0x65, 0x66, 0x6D, 0x63, 0x6E, 0x72, 0x71]
+    var seen = 0
+    for f in finals
+        if final_of(drive([0x1B, 0x5B, 0x31, f]).action) == f
+            seen = seen + 1
+    test.case("all twenty-seven finals dispatch on themselves")
+    test.assert(seen == list.len(finals))
+
+@test
+fn test_an_sgr_parameter_list_arrives_whole() [io]
+    // novo-vte: test_csi_sgr_fg_colors_each_apply and
+    // test_csi_sgr_multi_param_in_one_sequence — `ESC [ 1 ; 33 m`.
+    let step = drive([0x1B, 0x5B, 0x31, 0x3B, 0x33, 0x33, 0x6D])
+
+    test.case("SGR dispatches on 'm'")
+    test.assert(final_of(step.action) == 0x6D)
+
+    test.case("with both parameters where they were written")
+    test.assert(vtparse.param_count(step.parser) == 2)
+    test.assert(vtparse.param_at(step.parser, 0, 0) == 1)
+    test.assert(vtparse.param_at(step.parser, 1, 0) == 33)
+
+@test
+fn test_an_osc_is_consumed_and_the_text_after_it_prints() [io]
+    // novo-vte: test_osc_string_is_consumed_silently — the case that
+    // matters is not the payload but that the machine is back in the
+    // ground state afterwards, so 'A' and 'B' are text and not more
+    // payload.
+    let run = [0x1B, 0x5D, 0x30, 0x3B, 0x66, 0x6F, 0x6F, 0x07, 0x41, 0x42]
+
+    test.case("the two bytes after the BEL print")
+    test.assert(count_kind(run, 1) == 2)
+
+    test.case("and the machine is settled")
+    test.assert(vtparse.is_settled(parser_after(run)))
+
+@test
+fn test_a_dec_private_mode_keeps_its_marker_and_returns_to_ground() [io]
+    // novo-vte: test_csi_with_dec_private_intermediate_doesnt_dispatch_basic
+    // and test_csi_dec_priv_1049_alt_screen_round_trip.
+    let hide = drive([0x1B, 0x5B, 0x3F, 0x32, 0x35, 0x6C])
+    test.case("`ESC [ ? 25 l` is a dispatch on 'l' with the '?' apart")
+    test.assert(final_of(hide.action) == 0x6C)
+    test.assert(vtparse.private_marker_of(hide.parser) == 0x3F)
+    test.assert(vtparse.param_at(hide.parser, 0, 0) == 25)
+
+    test.case("and the alternate screen round-trips through set and reset")
+    let enter = drive([0x1B, 0x5B, 0x3F, 0x31, 0x30, 0x34, 0x39, 0x68])
+    let leave = drive([0x1B, 0x5B, 0x3F, 0x31, 0x30, 0x34, 0x39, 0x6C])
+    test.assert(final_of(enter.action) == 0x68)
+    test.assert(final_of(leave.action) == 0x6C)
+    test.assert(vtparse.param_at(enter.parser, 0, 0) == 1049)
+
+    test.case("the text after it is text")
+    test.assert(count_kind([0x1B, 0x5B, 0x3F, 0x32, 0x35, 0x6C, 0x41], 1) == 1)
+
+@test
+fn test_a_charset_designator_is_an_escape_with_an_intermediate() [io]
+    // novo-vte: test_charset_designate_consumes_two_bytes.  It
+    // consumed the charset byte with a hand-rolled one-byte state;
+    // here `(` is an ordinary intermediate and `B` an ordinary final,
+    // which is Williams' own reading and reports the designation
+    // instead of dropping it.
+    let step = drive([0x1B, 0x28, 0x42])
+
+    test.case("`ESC ( B` dispatches on 'B'")
+    test.assert(final_of(step.action) == 0x42)
+
+    test.case("with '(' kept as the intermediate it is")
+    test.assert(vtparse.intermediate_count(step.parser) == 1)
+    test.assert(vtparse.intermediate_at(step.parser, 0) == 0x28)
+    test.assert(vtparse.intermediate_at(step.parser, 1) == 0)
+    test.assert(vtparse.intermediate_at(step.parser, 0 - 1) == 0)
+
+    test.case("and 'X' after it is text")
+    test.assert(count_kind([0x1B, 0x28, 0x42, 0x58], 1) == 1)
+
+@test
+fn test_the_single_byte_escapes_dispatch_on_themselves() [io]
+    // novo-vte: test_esc_7_8_decsc_decrc, plus the IND / NEL / RI arms
+    // its `feed_esc` carried.
+    let finals = [0x37, 0x38, 0x44, 0x45, 0x4D, 0x63, 0x3D, 0x3E]
+    var seen = 0
+    for f in finals
+        if final_of(drive([0x1B, f]).action) == f
+            seen = seen + 1
+    test.case("DECSC, DECRC, IND, NEL, RI, RIS, DECPAM and DECPNM")
+    test.assert(seen == list.len(finals))
+
+// ── The state diagram ───────────────────────────────────────────────
+
+@test
+fn test_the_machine_rests_in_every_state_it_publishes() [io]
+    test.case("ground")
+    test.assert(state_code(vtparse.state_of(parser_after([0x41]))) == 0)
+
+    test.case("escape, and escape with an intermediate")
+    test.assert(state_code(vtparse.state_of(parser_after([0x1B]))) == 1)
+    test.assert(state_code(vtparse.state_of(parser_after([0x1B, 0x28]))) == 2)
+
+    test.case("csi entry, parameters, intermediates and ignore")
+    test.assert(state_code(vtparse.state_of(parser_after([0x1B, 0x5B]))) == 3)
+    test.assert(state_code(vtparse.state_of(parser_after([0x1B, 0x5B, 0x31]))) == 4)
+    test.assert(state_code(vtparse.state_of(parser_after([0x1B, 0x5B, 0x31, 0x20]))) == 5)
+    test.assert(state_code(vtparse.state_of(parser_after([0x1B, 0x5B, 0x31, 0x3F]))) == 6)
+
+    test.case("osc, dcs parameters and dcs payload")
+    test.assert(state_code(vtparse.state_of(parser_after([0x1B, 0x5D]))) == 7)
+    test.assert(state_code(vtparse.state_of(parser_after([0x1B, 0x50]))) == 8)
+    test.assert(state_code(vtparse.state_of(parser_after([0x1B, 0x50, 0x71]))) == 9)
+
+    test.case("the strings that are consumed, and a partial codepoint")
+    test.assert(state_code(vtparse.state_of(parser_after([0x1B, 0x5E]))) == 10)
+    test.assert(state_code(vtparse.state_of(parser_after([0xC3]))) == 11)
+
+@test
+fn test_an_intermediate_reaches_the_dispatch_it_belongs_to() [io]
+    // DECSCUSR is `CSI Ps SP q`, and without the SP it is a different
+    // sequence — which is why the intermediates are readable and not
+    // folded into the parameters.
+    let step = drive([0x1B, 0x5B, 0x32, 0x20, 0x71])
+
+    test.case("the dispatch is on 'q'")
+    test.assert(final_of(step.action) == 0x71)
+
+    test.case("with the space kept as an intermediate")
+    test.assert(vtparse.intermediate_count(step.parser) == 1)
+    test.assert(vtparse.intermediate_at(step.parser, 0) == 0x20)
+
+    test.case("and the parameter still readable beside it")
+    test.assert(vtparse.param_at(step.parser, 0, 0) == 2)
+
+@test
+fn test_a_sequence_that_breaks_the_grammar_is_dropped_whole() [io]
+    test.case("a private marker after a parameter is not a sequence")
+    let late = drive([0x1B, 0x5B, 0x31, 0x3F, 0x68])
+    test.assert(kind_of(late.action) == 0)
+    test.assert(vtparse.is_settled(late.parser))
+
+    test.case("nor is a parameter after an intermediate")
+    let back = drive([0x1B, 0x5B, 0x31, 0x20, 0x32, 0x71])
+    test.assert(kind_of(back.action) == 0)
+    test.assert(vtparse.is_settled(back.parser))
+
+    test.case("and the bytes before the final one are consumed, not printed")
+    test.assert(count_kind([0x1B, 0x5B, 0x31, 0x3F, 0x31, 0x32, 0x68], 1) == 0)
+
+@test
+fn test_an_esc_abandons_whatever_was_in_flight() [io]
+    test.case("from the middle of a parameter list")
+    test.assert(state_code(vtparse.state_of(parser_after([0x1B, 0x5B, 0x31, 0x1B]))) == 1)
+
+    test.case("from an intermediate, an ignore and a string alike")
+    test.assert(state_code(vtparse.state_of(parser_after([0x1B, 0x5B, 0x20, 0x1B]))) == 1)
+    test.assert(state_code(vtparse.state_of(parser_after([0x1B, 0x5B, 0x31, 0x3F, 0x1B]))) == 1)
+    test.assert(state_code(vtparse.state_of(parser_after([0x1B, 0x5B, 0x1B]))) == 1)
+    test.assert(state_code(vtparse.state_of(parser_after([0x1B, 0x28, 0x1B]))) == 1)
+    test.assert(state_code(vtparse.state_of(parser_after([0x1B, 0x1B]))) == 1)
+    test.assert(state_code(vtparse.state_of(parser_after([0x1B, 0x50, 0x1B]))) == 1)
+
+    test.case("and the sequence it abandoned dispatches nothing")
+    test.assert(count_kind([0x1B, 0x5B, 0x31, 0x1B, 0x5B, 0x32, 0x4A], 4) == 1)
+
+@test
+fn test_a_c0_control_inside_a_sequence_acts_where_it_arrived() [io]
+    // ECMA-48 § 5.4: a C0 control may appear inside a control sequence
+    // and is executed as it arrives, without ending the sequence.
+    test.case("in csi entry, in the parameters and in the intermediates")
+    test.assert(count_kind([0x1B, 0x5B, 0x0D], 2) == 1)
+    test.assert(count_kind([0x1B, 0x5B, 0x31, 0x0D], 2) == 1)
+    test.assert(count_kind([0x1B, 0x5B, 0x31, 0x20, 0x0D], 2) == 1)
+    test.assert(count_kind([0x1B, 0x0D], 2) == 1)
+    test.assert(count_kind([0x1B, 0x28, 0x0D], 2) == 1)
+
+    test.case("and the sequence still dispatches afterwards")
+    let step = drive([0x1B, 0x5B, 0x32, 0x0D, 0x3B, 0x34, 0x48])
+    test.assert(final_of(step.action) == 0x48)
+    test.assert(vtparse.param_at(step.parser, 1, 0) == 4)
+
+@test
+fn test_del_is_ignored_wherever_it_lands() [io]
+    test.case("DEL in the ground state prints nothing")
+    test.assert(kind_of(drive([0x7F]).action) == 0)
+
+    test.case("DEL after an ESC leaves the escape open")
+    test.assert(state_code(vtparse.state_of(parser_after([0x1B, 0x7F]))) == 1)
+
+    test.case("and a byte past 0x7F after an ESC returns to ground")
+    test.assert(state_code(vtparse.state_of(parser_after([0x1B, 0x80]))) == 0)
+    test.assert(state_code(vtparse.state_of(parser_after([0x1B, 0x28, 0x80]))) == 0)
+    test.assert(state_code(vtparse.state_of(parser_after([0x1B, 0x5B, 0x80]))) == 3)
+    test.assert(state_code(vtparse.state_of(parser_after([0x1B, 0x5B, 0x31, 0x80]))) == 4)
+    test.assert(state_code(vtparse.state_of(parser_after([0x1B, 0x5B, 0x20, 0x80]))) == 5)
+    test.assert(state_code(vtparse.state_of(parser_after([0x1B, 0x50, 0x80]))) == 8)
+
+// ── Strings ─────────────────────────────────────────────────────────
+
+@test
+fn test_a_dcs_reports_its_parameters_and_its_payload() [io]
+    // `ESC P 1 $ q m ESC \` — DECRQSS asking what SGR is set to, which
+    // is the DCS novo-vte dropped on purpose and this package reports.
+    let run = [0x1B, 0x50, 0x31, 0x24, 0x71, 0x6D, 0x1B, 0x5C]
+
+    test.case("one start, one payload byte, one end")
+    test.assert(count_kind(run, 8) == 1)
+    test.assert(count_kind(run, 9) == 1)
+    test.assert(count_kind(run, 10) == 1)
+
+    test.case("the start names the final byte")
+    var p = vtparse.parser_new()
+    var seen_final = 0 - 1
+    var seen_param = 0 - 1
+    var seen_intermediate = 0 - 1
+    for b in run
+        let step = vtparse.feed_byte(p, b)
+        p = step.parser
+        match step.action
+            AnsiDcsStart(f) =>
+                seen_final = f
+                seen_param = vtparse.param_at(step.parser, 0, 0)
+                seen_intermediate = vtparse.intermediate_at(step.parser, 0)
+            _               =>
+                seen_final = seen_final
+    test.assert(seen_final == 0x71)
+
+    test.case("and its parameters and intermediates ride on the parser")
+    test.assert(seen_param == 1)
+    test.assert(seen_intermediate == 0x24)
+
+    test.case("the machine is settled afterwards")
+    test.assert(vtparse.is_settled(parser_after(run)))
+
+    test.case("a DCS parameter list has a CSI's shape, colons and marker and all")
+    // `ESC P ? 1 ; 2 : 3 | ... ST` — nothing sends this, and that is
+    // the point: the grammar is the CSI's, so the parser has to take
+    // it whatever a terminal chooses to define.
+    let rich = drive([0x1B, 0x50, 0x3F, 0x31, 0x3B, 0x32, 0x3A, 0x33, 0x7C, 0x1B, 0x5C])
+    var marker = 0
+    var second = 0
+    var subs = 0
+    var q = vtparse.parser_new()
+    for b in [0x1B, 0x50, 0x3F, 0x31, 0x3B, 0x32, 0x3A, 0x33, 0x7C]
+        let step = vtparse.feed_byte(q, b)
+        q = step.parser
+        match step.action
+            AnsiDcsStart(_) =>
+                marker = vtparse.private_marker_of(step.parser)
+                second = vtparse.param_at(step.parser, 1, 0)
+                subs = vtparse.sub_count(step.parser, 1)
+            _               =>
+                marker = marker
+    test.assert(marker == 0x3F)
+    test.assert(second == 2)
+    test.assert(subs == 2)
+    test.assert(vtparse.is_settled(rich.parser))
+
+@test
+fn test_a_dcs_may_end_with_either_terminator() [io]
+    test.case("BEL ends it")
+    match drive([0x1B, 0x50, 0x71, 0x41, 0x07]).action
+        AnsiDcsEnd(t) =>
+            match t
+                AnsiBelTerminated => test.assert(true)
+                AnsiStTerminated  => test.assert(false)
+        _             => test.assert(false)
+
+    test.case("and so does ST")
+    match drive([0x1B, 0x50, 0x71, 0x41, 0x1B, 0x5C]).action
+        AnsiDcsEnd(t) =>
+            match t
+                AnsiStTerminated  => test.assert(true)
+                AnsiBelTerminated => test.assert(false)
+        _             => test.assert(false)
+
+    test.case("an ESC that is not ST is dropped and the byte after it is payload")
+    test.assert(count_kind([0x1B, 0x50, 0x71, 0x1B, 0x41, 0x07], 9) == 1)
+
+@test
+fn test_an_osc_esc_that_is_not_st_is_dropped() [io]
+    // xterm's own behaviour, and novo-vte's: the stray ESC goes, the
+    // byte after it is payload.
+    let run = [0x1B, 0x5D, 0x30, 0x3B, 0x1B, 0x41, 0x07]
+    test.case("three payload bytes, and the ESC is not one of them")
+    test.assert(count_kind(run, 6) == 3)
+
+@test
+fn test_sos_pm_and_apc_leave_no_trace() [io]
+    // `ESC X`, `ESC ^` and `ESC _` all carry a payload this package
+    // consumes without reporting, so that none of it can reach the
+    // ground state and be re-read as text.
+    let openers = [0x58, 0x5E, 0x5F]
+    var quiet = 0
+    for o in openers
+        if count_kind([0x1B, o, 0x41, 0x42, 0x1B, 0x5C, 0x43], 1) == 1
+            quiet = quiet + 1
+    test.case("the payload prints nothing and the 'C' after it prints")
+    test.assert(quiet == 3)
+
+    test.case("BEL ends one too")
+    test.assert(count_kind([0x1B, 0x5E, 0x41, 0x07, 0x43], 1) == 1)
+
+    test.case("and so does an ESC that is not ST, by being dropped")
+    test.assert(count_kind([0x1B, 0x5E, 0x1B, 0x41, 0x07, 0x43], 1) == 1)
+
+    test.case("the machine is settled at the end of each")
+    test.assert(vtparse.is_settled(parser_after([0x1B, 0x5F, 0x41, 0x1B, 0x5C])))
+
+@test
+fn test_an_osc_payload_reads_back_as_code_and_fields() [io]
+    test.case("a payload that does not begin with digits has no code")
+    let letters = [0x61 as u8, 0x62 as u8]
+    match vtparse.osc_code(letters)
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+
+    test.case("an empty payload has no code either")
+    let nothing: [u8] = []
+    match vtparse.osc_code(nothing)
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+
+    test.case("a payload of digits alone is all code")
+    let digits = [0x31 as u8, 0x31 as u8, 0x32 as u8]
+    match vtparse.osc_code(digits)
+        Some(c) => test.assert(c == 112)
+        None    => test.assert(false)
+
+    test.case("and field 0 is the code itself")
+    let payload = [0x35 as u8, 0x32 as u8, 0x3B as u8, 0x63 as u8]
+    match vtparse.osc_field(payload, 0)
+        Some(f) => test.assert(list.len(f) == 2)
+        None    => test.assert(false)
+
+// ── Every fault ─────────────────────────────────────────────────────
+
+@test
+fn test_every_limit_has_a_refusal_of_its_own() [io]
+    let tight = vtparse.strict_limits()
+
+    test.case("too many parameters")
+    test.assert(first_fault(tight, [0x1B, 0x5B, 0x31, 0x3B, 0x31, 0x3B, 0x31, 0x3B,
+                                    0x31, 0x3B, 0x31, 0x3B, 0x31, 0x3B, 0x31, 0x3B,
+                                    0x31, 0x3B, 0x31, 0x48]) == 0)
+
+    test.case("too many sub-parameters in one group")
+    test.assert(first_fault(tight, [0x1B, 0x5B, 0x34, 0x3A, 0x31, 0x3A, 0x32, 0x3A,
+                                    0x33, 0x3A, 0x34, 0x6D]) == 1)
+
+    test.case("a parameter past its ceiling")
+    test.assert(first_fault(tight, [0x1B, 0x5B, 0x39, 0x39, 0x39, 0x39, 0x39, 0x48]) == 2)
+
+    test.case("too many intermediate bytes")
+    test.assert(first_fault(tight, [0x1B, 0x5B, 0x20, 0x21, 0x22, 0x71]) == 3)
+    test.assert(first_fault(tight, [0x1B, 0x20, 0x21, 0x22, 0x42]) == 3)
+
+    test.case("and the machine is settled after each of them")
+    test.assert(vtparse.is_settled(drive_with(tight,
+        [0x1B, 0x5B, 0x39, 0x39, 0x39, 0x39, 0x39, 0x48]).parser))
+
+@test
+fn test_a_string_past_its_ceiling_is_refused_and_the_rest_dropped() [io]
+    // A four-parameter limit set with payload ceilings of two bytes,
+    // so the case is a few bytes rather than a few hundred.
+    let small = AnsiLimits { params_max: 4, subs_max: 2, param_max: 99,
+                             intermediates_max: 2, osc_bytes_max: 2,
+                             dcs_bytes_max: 2 }
+
+    test.case("an OSC past its ceiling")
+    test.assert(first_fault(small, [0x1B, 0x5D, 0x30, 0x3B, 0x41, 0x42, 0x07]) == 4)
+
+    test.case("a DCS past its ceiling")
+    test.assert(first_fault(small, [0x1B, 0x50, 0x71, 0x41, 0x42, 0x43, 0x1B, 0x5C]) == 5)
+
+    test.case("the rest of the string is consumed rather than printed")
+    var p = vtparse.parser_with(small)
+    var prints = 0
+    for b in [0x1B, 0x5D, 0x30, 0x3B, 0x41, 0x42, 0x43, 0x44, 0x07, 0x5A]
+        let step = vtparse.feed_byte(p, b)
+        p = step.parser
+        if kind_of(step.action) == 1
+            prints = prints + 1
+    test.assert(prints == 1)
+
+    test.case("and the machine is settled")
+    test.assert(vtparse.is_settled(p))
+
+@test
+fn test_a_parameter_ceiling_of_zero_refuses_the_first_digit() [io]
+    // Not a configuration anyone should ship, and exactly why the
+    // limit is the caller's: a parser that trusted its own constants
+    // here would have an arm nobody could reach.
+    let none = AnsiLimits { params_max: 0, subs_max: 1, param_max: 9,
+                            intermediates_max: 1, osc_bytes_max: 1,
+                            dcs_bytes_max: 1 }
+    test.case("the first digit is already one parameter too many")
+    test.assert(first_fault(none, [0x1B, 0x5B, 0x31, 0x48]) == 0)
+
+    test.case("and so is the semicolon that opens one")
+    test.assert(first_fault(none, [0x1B, 0x5B, 0x3B, 0x48]) == 0)
+
+    test.case("and the colon that opens a sub-parameter")
+    test.assert(first_fault(none, [0x1B, 0x5B, 0x3A, 0x48]) == 1)
+
+// ── UTF-8 ───────────────────────────────────────────────────────────
+
+@test
+fn test_a_codepoint_of_every_length_is_assembled() [io]
+    test.case("two bytes — U+00E9")
+    match drive([0xC3, 0xA9]).action
+        AnsiPrint(ch) => test.assert(ch == 0xE9)
+        _             => test.assert(false)
+
+    test.case("three bytes — U+20AC, the euro sign")
+    match drive([0xE2, 0x82, 0xAC]).action
+        AnsiPrint(ch) => test.assert(ch == 0x20AC)
+        _             => test.assert(false)
+
+    test.case("four bytes — U+1F600")
+    match drive([0xF0, 0x9F, 0x98, 0x80]).action
+        AnsiPrint(ch) => test.assert(ch == 0x1F600)
+        _             => test.assert(false)
+
+    test.case("and a three-byte codepoint rests unsettled in between")
+    test.assert(vtparse.is_settled(parser_after([0xE2, 0x82])) == false)
+
+@test
+fn test_the_four_leads_with_a_narrower_second_byte_are_checked() [io]
+    // Unicode 15 § 3.9 table 3-7: the ranges that make an overlong
+    // form or a surrogate impossible to spell.
+    test.case("0xE0 0x80 would be an overlong three-byte form")
+    test.assert(fault_of(drive([0xE0, 0x80]).action) == 6)
+
+    test.case("0xED 0xA0 would be a surrogate")
+    test.assert(fault_of(drive([0xED, 0xA0]).action) == 6)
+
+    test.case("0xF0 0x80 would be an overlong four-byte form")
+    test.assert(fault_of(drive([0xF0, 0x80]).action) == 6)
+
+    test.case("0xF4 0x90 would be past U+10FFFF")
+    test.assert(fault_of(drive([0xF4, 0x90]).action) == 6)
+
+    test.case("while the lowest legal byte of each is accepted")
+    test.assert(kind_of(drive([0xE0, 0xA0]).action) == 0)
+    test.assert(kind_of(drive([0xED, 0x9F]).action) == 0)
+    test.assert(kind_of(drive([0xF0, 0x90]).action) == 0)
+    test.assert(kind_of(drive([0xF4, 0x8F]).action) == 0)
+
+@test
+fn test_a_lead_byte_that_cannot_begin_anything_is_refused() [io]
+    test.case("0xC0 and 0xC1 only ever begin an overlong form")
+    test.assert(fault_of(drive([0xC0]).action) == 6)
+    test.assert(fault_of(drive([0xC1]).action) == 6)
+
+    test.case("and 0xF5 upward only ever a codepoint past U+10FFFF")
+    test.assert(fault_of(drive([0xF5]).action) == 6)
+    test.assert(fault_of(drive([0xFF]).action) == 6)
+
+    test.case("the machine is settled after each, not wedged")
+    test.assert(vtparse.is_settled(parser_after([0xC0])))
+
+@test
+fn test_a_truncated_codepoint_does_not_swallow_the_byte_after_it() [io]
+    // The recovery novo-vte's `feed_utf8_cont` had: drop the partial
+    // codepoint, read the byte again from the ground state.  Losing it
+    // instead would lose an ESC, and a lost ESC is a control sequence
+    // printed as text.
+    test.case("a letter after a truncated lead still prints")
+    match drive([0xC3, 0x41]).action
+        AnsiPrint(ch) => test.assert(ch == 0x41)
+        _             => test.assert(false)
+
+    test.case("an ESC after one still opens a sequence")
+    let step = drive([0xE2, 0x82, 0x1B, 0x5B, 0x32, 0x4A])
+    test.assert(final_of(step.action) == 0x4A)
+
+    test.case("and a byte that can begin nothing is refused, as it is in ground")
+    test.assert(fault_of(drive([0xC3, 0xF8]).action) == 6)
+
+    test.case("while a valid lead after one simply starts the next codepoint")
+    test.assert(kind_of(drive([0xE2, 0xC3]).action) == 0)
+
+@test
+fn test_a_codepoint_is_not_parsed_inside_a_sequence() [io]
+    // 0xC3 inside a CSI is an ordinary byte the grammar has no arm
+    // for, not the start of a codepoint: a sequence is 7-bit.
+    test.case("the parameter list survives it")
+    let step = drive([0x1B, 0x5B, 0x32, 0xC3, 0x3B, 0x34, 0x48])
+    test.assert(final_of(step.action) == 0x48)
+    test.assert(vtparse.param_at(step.parser, 1, 0) == 4)
+
+// ── The chunk path ──────────────────────────────────────────────────
+
+@test
+fn test_a_whole_chunk_drains_into_its_calls() [io]
+    // Three sequences and two letters in one read, which is what a pty
+    // actually hands a program.
+    let drained = vtparse.feed(vtparse.parser_new(),
+                               [0x1B as u8, 0x5B as u8, 0x48 as u8, 0x41 as u8,
+                                0x1B as u8, 0x5B as u8, 0x33 as u8, 0x31 as u8,
+                                0x6D as u8, 0x42 as u8, 0x0A as u8])
+
+    test.case("five actions came out and the bytes with nothing to do did not")
+    test.assert(list.len(drained.calls) == 5)
+
+    test.case("the SGR call kept the parameter it fired with")
+    let sgr_call = list.get(drained.calls, 2)
+    test.assert(vtparse.params_at(sgr_call.params, 0, 0) == 31)
+
+    test.case("and the parser came back settled")
+    test.assert(vtparse.is_settled(drained.parser))
+
+@test
+fn test_a_chunk_that_ends_mid_sequence_carries_the_rest_forward() [io]
+    let first = vtparse.feed(vtparse.parser_new(),
+                             [0x1B as u8, 0x5B as u8, 0x33 as u8, 0x3B as u8])
+
+    test.case("nothing came out of the half")
+    test.assert(list.len(first.calls) == 0)
+    test.assert(vtparse.is_settled(first.parser) == false)
+
+    let second = vtparse.feed(first.parser, [0x35 as u8, 0x48 as u8])
+
+    test.case("and the dispatch comes out of the next chunk, whole")
+    test.assert(list.len(second.calls) == 1)
+    let call = list.get(second.calls, 0)
+    test.assert(vtparse.params_at(call.params, 0, 1) == 3)
+    test.assert(vtparse.params_at(call.params, 1, 1) == 5)
+
+@test
+fn test_a_snapshot_and_the_parser_answer_the_same_questions() [io]
+    // `38:2::1:2:3` — the one shape where the two accessors could
+    // plausibly disagree, because it is the only one with a group.
+    let step = drive([0x1B, 0x5B, 0x33, 0x38, 0x3A, 0x32, 0x3A, 0x3A,
+                      0x31, 0x3A, 0x32, 0x3A, 0x33, 0x6D])
+    let snap = vtparse.params_of(step.parser)
+
+    test.case("the counts agree")
+    test.assert(vtparse.params_count(snap) == vtparse.param_count(step.parser))
+    test.assert(vtparse.params_sub_count(snap, 0) == vtparse.sub_count(step.parser, 0))
+
+    test.case("and so does every slot, including the empty one")
+    var agree = 0
+    for j in 0..6
+        if vtparse.params_sub_at(snap, 0, j, 7) == vtparse.sub_at(step.parser, 0, j, 7)
+            agree = agree + 1
+    test.assert(agree == 6)
+
+    test.case("the empty middle slot takes the fallback on both")
+    test.assert(vtparse.params_sub_at(snap, 0, 2, 9) == 9)
+
+    test.case("a sub-parameter that runs into the NEXT group takes the fallback")
+    let two = drive([0x1B, 0x5B, 0x34, 0x3A, 0x33, 0x3B, 0x37, 0x6D])
+    test.assert(vtparse.sub_count(two.parser, 0) == 2)
+    test.assert(vtparse.sub_at(two.parser, 0, 1, 9) == 3)
+    test.assert(vtparse.sub_at(two.parser, 0, 2, 9) == 9)
+
+    test.case("and a sub-parameter past the group takes it too")
+    test.assert(vtparse.sub_at(step.parser, 0, 9, 9) == 9)
+    test.assert(vtparse.sub_at(step.parser, 0, 0 - 1, 9) == 9)
+    test.assert(vtparse.sub_at(step.parser, 4, 0, 9) == 9)
+    test.assert(vtparse.params_sub_at(snap, 4, 0, 9) == 9)
+
+@test
+fn test_an_empty_snapshot_answers_for_every_accessor() [io]
+    let empty = vtparse.params_empty()
+
+    test.case("no parameters, no sub-parameters, no marker")
+    test.assert(vtparse.params_count(empty) == 0)
+    test.assert(vtparse.params_sub_count(empty, 0) == 0)
+    test.assert(vtparse.params_at(empty, 0, 5) == 5)
+    test.assert(vtparse.params_sub_at(empty, 0, 0, 5) == 5)
+    test.assert(empty.private_marker == vtparse.NO_PRIVATE_MARKER)
+
+@test
+fn test_reset_puts_the_machine_back_from_anywhere() [io]
+    test.case("from a string, from a partial codepoint, from an ignore")
+    test.assert(vtparse.is_settled(vtparse.reset(parser_after([0x1B, 0x5D, 0x30]))))
+    test.assert(vtparse.is_settled(vtparse.reset(parser_after([0xF0, 0x9F]))))
+    test.assert(vtparse.is_settled(vtparse.reset(parser_after([0x1B, 0x5B, 0x31, 0x3F]))))
+
+    test.case("and it forgets the parameters the partial sequence had")
+    let p = vtparse.reset(parser_after([0x1B, 0x5B, 0x31, 0x32, 0x3B, 0x33]))
+    test.assert(vtparse.param_count(p) == 0)
+    test.assert(vtparse.private_marker_of(p) == vtparse.NO_PRIVATE_MARKER)
+    test.assert(vtparse.intermediate_count(p) == 0)

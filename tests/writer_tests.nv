@@ -1,0 +1,1126 @@
+// writer_tests.nv — the bytes, one sequence at a time, and the SGR
+// arithmetic behind them.
+//
+// EVERY CASE HERE ASSERTS THE EXACT BYTES.  The suites beside this one
+// assert that a writer appended SOMETHING, which is the right check
+// for a surface that does not exist yet and the wrong one for a
+// surface that does: `CSI 2 ; 1 H` and `CSI 1 ; 2 H` both append six
+// bytes, and only one of them puts the cursor where the caller asked.
+// The expected byte lists are read out of ECMA-48 for the standard
+// functions, xterm's `ctlseqs` for the private modes and the OSC
+// strings, and ITU-T T.416 for the colon forms.
+//
+// The parse direction is the oracle for the write direction wherever
+// both exist: a sequence this package writes is fed back through its
+// own parser and has to come out as what it was.
+
+use std.test
+use std.list
+use vtparse
+use sgr
+use seqwrite
+use vtquery
+
+// ── Helpers ─────────────────────────────────────────────────────────
+
+// Whether a written buffer is exactly these bytes.
+fn same(out: [u8], expect: [Int]) -> Bool
+    if list.len(out) != list.len(expect)
+        false
+    else
+        var ok = true
+        for i in 0..list.len(expect)
+            if (list.get(out, i) as Int) != list.get(expect, i)
+                ok = false
+        ok
+
+// ESC, for the lists below.
+fn e() -> Int
+    0x1B
+
+// The last step of feeding a written buffer back through the parser.
+fn reparse(out: [u8]) -> vtparse.AnsiStep
+    var p = vtparse.parser_new()
+    var last = vtparse.feed_byte(p, 0x00)
+    for b in out
+        last = vtparse.feed_byte(p, b as Int)
+        p = last.parser
+    last
+
+// A style with one flag turned on, from the terminal's own default.
+fn only(code: Int) -> sgr.SgrAttrs
+    sgr.apply_sgr_one(sgr.attrs_default(), code)
+
+// The parameters of a `CSI <text> m`, as the parser collected them.
+fn params_of_csi(text: Str) -> vtparse.AnsiParams
+    var p = vtparse.parser_new()
+    var last = vtparse.feed_byte(p, e())
+    p = last.parser
+    last = vtparse.feed_byte(p, 0x5B)
+    p = last.parser
+    for i in 0..str.len(text)
+        last = vtparse.feed_byte(p, str.byte_at_or(text, i, 0))
+        p = last.parser
+    last = vtparse.feed_byte(p, 0x6D)
+    vtparse.params_of(last.parser)
+
+// The attributes `CSI <text> m` folds onto the default.
+fn fold(text: Str) -> sgr.SgrAttrs
+    sgr.apply_sgr(sgr.attrs_default(), params_of_csi(text))
+
+// ── Cursor ──────────────────────────────────────────────────────────
+
+@test
+fn test_the_cursor_sequences_are_the_bytes_ecma_48_defines() [io]
+    test.case("CUP is `CSI row ; col H`, both one-based")
+    test.assert(same(seqwrite.cursor_to([], 2, 1), [e(), 0x5B, 0x32, 0x3B, 0x31, 0x48]))
+
+    test.case("and a two-digit coordinate is two digits")
+    test.assert(same(seqwrite.cursor_to([], 12, 40),
+                     [e(), 0x5B, 0x31, 0x32, 0x3B, 0x34, 0x30, 0x48]))
+
+    test.case("the four relative moves are A B C D")
+    test.assert(same(seqwrite.cursor_up([], 3), [e(), 0x5B, 0x33, 0x41]))
+    test.assert(same(seqwrite.cursor_down([], 3), [e(), 0x5B, 0x33, 0x42]))
+    test.assert(same(seqwrite.cursor_forward([], 3), [e(), 0x5B, 0x33, 0x43]))
+    test.assert(same(seqwrite.cursor_back([], 3), [e(), 0x5B, 0x33, 0x44]))
+
+    test.case("CHA is G and VPA is d")
+    test.assert(same(seqwrite.cursor_column([], 7), [e(), 0x5B, 0x37, 0x47]))
+    test.assert(same(seqwrite.cursor_row([], 7), [e(), 0x5B, 0x37, 0x64]))
+
+    test.case("CNL is E and CPL is F")
+    test.assert(same(seqwrite.cursor_next_line([], 1), [e(), 0x5B, 0x31, 0x45]))
+    test.assert(same(seqwrite.cursor_prev_line([], 1), [e(), 0x5B, 0x31, 0x46]))
+
+    test.case("a count at or below zero is written 0, the sequence's own default")
+    test.assert(same(seqwrite.cursor_up([], 0), [e(), 0x5B, 0x30, 0x41]))
+    test.assert(same(seqwrite.cursor_up([], 0 - 4), [e(), 0x5B, 0x30, 0x41]))
+
+@test
+fn test_the_cursor_is_saved_with_decsc_and_not_with_scosc() [io]
+    test.case("DECSC is `ESC 7` — two bytes, no CSI")
+    test.assert(same(seqwrite.cursor_save([]), [e(), 0x37]))
+
+    test.case("and DECRC is `ESC 8`")
+    test.assert(same(seqwrite.cursor_restore([]), [e(), 0x38]))
+
+@test
+fn test_every_cursor_shape_is_its_own_decscusr() [io]
+    test.case("DECSCUSR is `CSI Ps SP q`")
+    test.assert(same(seqwrite.cursor_shape([], AnsiShapeDefault),
+                     [e(), 0x5B, 0x30, 0x20, 0x71]))
+    test.assert(same(seqwrite.cursor_shape([], AnsiBlinkingBlock),
+                     [e(), 0x5B, 0x31, 0x20, 0x71]))
+    test.assert(same(seqwrite.cursor_shape([], AnsiSteadyBlock),
+                     [e(), 0x5B, 0x32, 0x20, 0x71]))
+    test.assert(same(seqwrite.cursor_shape([], AnsiBlinkingUnderline),
+                     [e(), 0x5B, 0x33, 0x20, 0x71]))
+    test.assert(same(seqwrite.cursor_shape([], AnsiSteadyUnderline),
+                     [e(), 0x5B, 0x34, 0x20, 0x71]))
+    test.assert(same(seqwrite.cursor_shape([], AnsiBlinkingBar),
+                     [e(), 0x5B, 0x35, 0x20, 0x71]))
+    test.assert(same(seqwrite.cursor_shape([], AnsiSteadyBar),
+                     [e(), 0x5B, 0x36, 0x20, 0x71]))
+
+    test.case("and the space really is an intermediate when read back")
+    let step = reparse(seqwrite.cursor_shape([], AnsiSteadyBar))
+    test.assert(vtparse.intermediate_at(step.parser, 0) == 0x20)
+
+// ── Erasing and scrolling ───────────────────────────────────────────
+
+@test
+fn test_erasing_writes_the_mode_number() [io]
+    test.case("ED's four modes")
+    test.assert(same(seqwrite.erase_display([], AnsiEraseToEnd), [e(), 0x5B, 0x30, 0x4A]))
+    test.assert(same(seqwrite.erase_display([], AnsiEraseToStart), [e(), 0x5B, 0x31, 0x4A]))
+    test.assert(same(seqwrite.erase_display([], AnsiEraseAll), [e(), 0x5B, 0x32, 0x4A]))
+    test.assert(same(seqwrite.erase_display([], AnsiEraseScrollback),
+                     [e(), 0x5B, 0x33, 0x4A]))
+
+    test.case("EL has no scrollback, so mode 3 is written as 2")
+    test.assert(same(seqwrite.erase_line([], AnsiEraseToEnd), [e(), 0x5B, 0x30, 0x4B]))
+    test.assert(same(seqwrite.erase_line([], AnsiEraseToStart), [e(), 0x5B, 0x31, 0x4B]))
+    test.assert(same(seqwrite.erase_line([], AnsiEraseAll), [e(), 0x5B, 0x32, 0x4B]))
+    test.assert(same(seqwrite.erase_line([], AnsiEraseScrollback), [e(), 0x5B, 0x32, 0x4B]))
+
+    test.case("and ECH blanks in place")
+    test.assert(same(seqwrite.erase_chars([], 4), [e(), 0x5B, 0x34, 0x58]))
+
+@test
+fn test_scrolling_and_the_region_are_written_as_defined() [io]
+    test.case("DECSTBM takes both margins, one-based and inclusive")
+    test.assert(same(seqwrite.scroll_region([], 2, 20),
+                     [e(), 0x5B, 0x32, 0x3B, 0x32, 0x30, 0x72]))
+
+    test.case("and with no parameters it is the whole screen again")
+    test.assert(same(seqwrite.scroll_region_reset([]), [e(), 0x5B, 0x72]))
+
+    test.case("SU and SD")
+    test.assert(same(seqwrite.scroll_up([], 1), [e(), 0x5B, 0x31, 0x53]))
+    test.assert(same(seqwrite.scroll_down([], 1), [e(), 0x5B, 0x31, 0x54]))
+
+    test.case("IL, DL, ICH and DCH")
+    test.assert(same(seqwrite.insert_lines([], 2), [e(), 0x5B, 0x32, 0x4C]))
+    test.assert(same(seqwrite.delete_lines([], 2), [e(), 0x5B, 0x32, 0x4D]))
+    test.assert(same(seqwrite.insert_chars([], 2), [e(), 0x5B, 0x32, 0x40]))
+    test.assert(same(seqwrite.delete_chars([], 2), [e(), 0x5B, 0x32, 0x50]))
+
+// ── Modes ───────────────────────────────────────────────────────────
+
+@test
+fn test_every_named_mode_has_the_number_xterm_gives_it() [io]
+    test.case("the ANSI one")
+    test.assert(seqwrite.mode_number(AnsiInsertMode) == 4)
+    test.assert(seqwrite.mode_is_private(AnsiInsertMode) == false)
+
+    test.case("and the private ones")
+    test.assert(seqwrite.mode_number(AnsiAutoWrap) == 7)
+    test.assert(seqwrite.mode_number(AnsiCursorVisible) == 25)
+    test.assert(seqwrite.mode_number(AnsiAltScreen) == 1049)
+    test.assert(seqwrite.mode_number(AnsiBracketedPaste) == 2004)
+    test.assert(seqwrite.mode_number(AnsiMouseClicks) == 1000)
+    test.assert(seqwrite.mode_number(AnsiMouseDrag) == 1002)
+    test.assert(seqwrite.mode_number(AnsiMouseMotion) == 1003)
+    test.assert(seqwrite.mode_number(AnsiMouseSgr) == 1006)
+    test.assert(seqwrite.mode_number(AnsiFocusEvents) == 1004)
+    test.assert(seqwrite.mode_number(AnsiSyncOutput) == 2026)
+
+    test.case("the two escape hatches carry their own number")
+    test.assert(seqwrite.mode_number(AnsiPrivateMode(1005)) == 1005)
+    test.assert(seqwrite.mode_number(AnsiAnsiMode(20)) == 20)
+
+    test.case("and only the ANSI ones are written without a marker")
+    test.assert(seqwrite.mode_is_private(AnsiAnsiMode(20)) == false)
+    test.assert(seqwrite.mode_is_private(AnsiPrivateMode(1005)))
+    test.assert(seqwrite.mode_is_private(AnsiAutoWrap))
+    test.assert(seqwrite.mode_is_private(AnsiCursorVisible))
+    test.assert(seqwrite.mode_is_private(AnsiAltScreen))
+    test.assert(seqwrite.mode_is_private(AnsiBracketedPaste))
+    test.assert(seqwrite.mode_is_private(AnsiMouseClicks))
+    test.assert(seqwrite.mode_is_private(AnsiMouseDrag))
+    test.assert(seqwrite.mode_is_private(AnsiMouseMotion))
+    test.assert(seqwrite.mode_is_private(AnsiMouseSgr))
+    test.assert(seqwrite.mode_is_private(AnsiFocusEvents))
+    test.assert(seqwrite.mode_is_private(AnsiSyncOutput))
+
+@test
+fn test_setting_a_mode_writes_the_marker_or_leaves_it_out() [io]
+    test.case("the alternate screen is `CSI ? 1049 h`")
+    test.assert(same(seqwrite.set_mode([], AnsiAltScreen),
+                     [e(), 0x5B, 0x3F, 0x31, 0x30, 0x34, 0x39, 0x68]))
+
+    test.case("and leaving it is the same sequence with 'l'")
+    test.assert(same(seqwrite.reset_mode([], AnsiAltScreen),
+                     [e(), 0x5B, 0x3F, 0x31, 0x30, 0x34, 0x39, 0x6C]))
+
+    test.case("insert mode is `CSI 4 h`, with no marker at all")
+    test.assert(same(seqwrite.set_mode([], AnsiInsertMode), [e(), 0x5B, 0x34, 0x68]))
+    test.assert(same(seqwrite.reset_mode([], AnsiInsertMode), [e(), 0x5B, 0x34, 0x6C]))
+
+    test.case("and the parser reads the marker back off each")
+    test.assert(vtparse.private_marker_of(reparse(seqwrite.set_mode([], AnsiAltScreen)).parser)
+                == 0x3F)
+    test.assert(vtparse.private_marker_of(reparse(seqwrite.set_mode([], AnsiInsertMode)).parser)
+                == vtparse.NO_PRIVATE_MARKER)
+
+// ── Text ────────────────────────────────────────────────────────────
+
+@test
+fn test_a_codepoint_is_written_in_the_length_it_needs() [io]
+    test.case("ASCII is one byte")
+    test.assert(same(seqwrite.put_codepoint([], 0x41), [0x41]))
+
+    test.case("U+00E9 is two")
+    test.assert(same(seqwrite.put_codepoint([], 0xE9), [0xC3, 0xA9]))
+
+    test.case("U+20AC is three")
+    test.assert(same(seqwrite.put_codepoint([], 0x20AC), [0xE2, 0x82, 0xAC]))
+
+    test.case("U+1F600 is four")
+    test.assert(same(seqwrite.put_codepoint([], 0x1F600), [0xF0, 0x9F, 0x98, 0x80]))
+
+    test.case("and a codepoint that is not one becomes U+FFFD")
+    let fffd = [0xEF, 0xBF, 0xBD]
+    test.assert(same(seqwrite.put_codepoint([], 0 - 1), fffd))
+    test.assert(same(seqwrite.put_codepoint([], 0x110000), fffd))
+    test.assert(same(seqwrite.put_codepoint([], 0xD800), fffd))
+
+    test.case("every one of them reads back as the codepoint it was")
+    match reparse(seqwrite.put_codepoint([], 0x1F600)).action
+        AnsiPrint(ch) => test.assert(ch == 0x1F600)
+        _             => test.assert(false)
+
+@test
+fn test_text_goes_out_unchanged_and_untrusted_text_does_not() [io]
+    test.case("put_text is the bytes, exactly")
+    test.assert(same(seqwrite.put_text([], "hi"), [0x68, 0x69]))
+
+    test.case("an escape in put_text survives, which is what it is for")
+    test.assert(same(seqwrite.put_text([], "\x1b["), [e(), 0x5B]))
+
+    test.case("put_text_safe turns a C0 control into a caret and a letter")
+    test.assert(same(seqwrite.put_text_safe([], "a\x01b"), [0x61, 0x5E, 0x41, 0x62]))
+
+    test.case("ESC becomes `^[`")
+    test.assert(same(seqwrite.put_text_safe([], "\x1b"), [0x5E, 0x5B]))
+
+    test.case("DEL becomes `^?`")
+    test.assert(same(seqwrite.put_text_safe([], "\x7f"), [0x5E, 0x3F]))
+
+    test.case("a C1 control, which is two bytes in UTF-8, becomes a tilde and a letter")
+    test.assert(same(seqwrite.put_text_safe([], "\u{9b}"), [0x7E, 0x5B]))
+
+    test.case("while an ordinary two-byte codepoint is left alone")
+    test.assert(same(seqwrite.put_text_safe([], "é"), [0xC3, 0xA9]))
+
+    test.case("and an OSC 52 hidden in a log line cannot reach a terminal")
+    let scrubbed = seqwrite.put_text_safe([], "hello\x1b]52;c;QUJD\x07")
+    var escapes = 0
+    for b in scrubbed
+        if (b as Int) == 0x1B or (b as Int) == 0x07
+            escapes = escapes + 1
+    test.assert(escapes == 0)
+
+// ── Strings ─────────────────────────────────────────────────────────
+
+@test
+fn test_an_osc_is_written_with_the_terminator_it_was_asked_for() [io]
+    let payload = [0x41 as u8]
+
+    test.case("BEL")
+    test.assert(same(seqwrite.osc([], 0, payload, AnsiEndWithBel),
+                     [e(), 0x5D, 0x30, 0x3B, 0x41, 0x07]))
+
+    test.case("and ST")
+    test.assert(same(seqwrite.osc([], 0, payload, AnsiEndWithSt),
+                     [e(), 0x5D, 0x30, 0x3B, 0x41, e(), 0x5C]))
+
+    test.case("set_title is OSC 0")
+    test.assert(same(seqwrite.set_title([], "hi"),
+                     [e(), 0x5D, 0x30, 0x3B, 0x68, 0x69, 0x07]))
+
+    test.case("and clipboard_write is OSC 52 with the selection and the base64")
+    test.assert(same(seqwrite.clipboard_write([], "c", "QUJD"),
+                     [e(), 0x5D, 0x35, 0x32, 0x3B, 0x63, 0x3B,
+                      0x51, 0x55, 0x4A, 0x44, e(), 0x5C]))
+
+    test.case("a written OSC parses back to its own code and fields")
+    var p = vtparse.parser_new()
+    var acc: [u8] = []
+    for b in seqwrite.clipboard_write([], "c", "QUJD")
+        let step = vtparse.feed_byte(p, b as Int)
+        p = step.parser
+        match step.action
+            AnsiOscPut(v) =>
+                acc = list.push(acc, v as u8)
+            _             =>
+                acc = acc
+    match vtparse.osc_code(acc)
+        Some(c) => test.assert(c == 52)
+        None    => test.assert(false)
+    match vtparse.osc_field(acc, 2)
+        Some(f) => test.assert(list.len(f) == 4)
+        None    => test.assert(false)
+
+// ── The escape hatches ──────────────────────────────────────────────
+
+@test
+fn test_the_raw_writers_put_every_part_where_it_belongs() [io]
+    test.case("a private CSI with one parameter")
+    test.assert(same(seqwrite.csi([], 0x3F, [2026], [], 0x68),
+                     [e(), 0x5B, 0x3F, 0x32, 0x30, 0x32, 0x36, 0x68]))
+
+    test.case("several parameters are separated by semicolons")
+    test.assert(same(seqwrite.csi([], 0, [1, 2, 3], [], 0x6D),
+                     [e(), 0x5B, 0x31, 0x3B, 0x32, 0x3B, 0x33, 0x6D]))
+
+    test.case("no parameters is a bare CSI")
+    test.assert(same(seqwrite.csi([], 0, [], [], 0x63), [e(), 0x5B, 0x63]))
+
+    test.case("intermediates come after the parameters")
+    test.assert(same(seqwrite.csi([], 0, [1], [0x24], 0x70),
+                     [e(), 0x5B, 0x31, 0x24, 0x70]))
+
+    test.case("`sgr` is a CSI with no marker and an 'm'")
+    test.assert(same(seqwrite.sgr([], [1, 31]), [e(), 0x5B, 0x31, 0x3B, 0x33, 0x31, 0x6D]))
+    test.assert(same(seqwrite.sgr([], []), [e(), 0x5B, 0x6D]))
+    test.assert(same(seqwrite.sgr_reset([]), [e(), 0x5B, 0x30, 0x6D]))
+
+    test.case("and `esc` is ESC, intermediates, final")
+    test.assert(same(seqwrite.esc([], [], 0x63), [e(), 0x63]))
+    test.assert(same(seqwrite.esc([], [0x28], 0x42), [e(), 0x28, 0x42]))
+
+@test
+fn test_csi_params_round_trips_a_sequence_this_package_parsed() [io]
+    // `CSI 38:2::1:2:3 m` — the T.416 colon form, with the empty
+    // colour-space slot that a flat parameter list cannot carry.
+    let written = seqwrite.csi_params([], params_of_csi("38:2::1:2:3"), 0x6D)
+
+    test.case("the bytes come back out exactly as they went in")
+    test.assert(same(written, [e(), 0x5B, 0x33, 0x38, 0x3A, 0x32, 0x3A, 0x3A,
+                               0x31, 0x3A, 0x32, 0x3A, 0x33, 0x6D]))
+
+    test.case("a private marker on the snapshot is written too")
+    let marked = params_of_csi("?1049")
+    test.assert(list.len(seqwrite.csi_params([], marked, 0x68)) == 8)
+
+    test.case("and an intermediate rides along")
+    var p = vtparse.parser_new()
+    var last = vtparse.feed_byte(p, 0x00)
+    for b in [e(), 0x5B, 0x32, 0x20, 0x71]
+        last = vtparse.feed_byte(p, b)
+        p = last.parser
+    test.assert(same(seqwrite.csi_params([], vtparse.params_of(p), 0x71),
+                     [e(), 0x5B, 0x32, 0x20, 0x71]))
+
+    test.case("an empty snapshot writes a bare CSI")
+    test.assert(same(seqwrite.csi_params([], vtparse.params_empty(), 0x63),
+                     [e(), 0x5B, 0x63]))
+
+// ── SGR: folding a parameter list on ────────────────────────────────
+
+@test
+fn test_every_sgr_parameter_that_takes_no_argument_folds_on() [io]
+    test.case("the styles that turn on")
+    test.assert(fold("1").bold)
+    test.assert(fold("2").dim)
+    test.assert(fold("3").italic)
+    test.assert(fold("5").blink)
+    test.assert(fold("6").blink)
+    test.assert(fold("7").inverse)
+    test.assert(fold("8").hidden)
+    test.assert(fold("9").strike)
+    test.assert(fold("53").overline)
+
+    test.case("the two underline spellings that need no colon")
+    match fold("4").underline
+        SgrSingleUnderline => test.assert(true)
+        _                  => test.assert(false)
+    match fold("21").underline
+        SgrDoubleUnderline => test.assert(true)
+        _                  => test.assert(false)
+
+    test.case("and the ones that turn off")
+    test.assert(sgr.apply_sgr_one(only(1), 22).bold == false)
+    test.assert(sgr.apply_sgr_one(only(2), 22).dim == false)
+    test.assert(sgr.apply_sgr_one(only(3), 23).italic == false)
+    test.assert(sgr.apply_sgr_one(only(5), 25).blink == false)
+    test.assert(sgr.apply_sgr_one(only(7), 27).inverse == false)
+    test.assert(sgr.apply_sgr_one(only(8), 28).hidden == false)
+    test.assert(sgr.apply_sgr_one(only(9), 29).strike == false)
+    test.assert(sgr.apply_sgr_one(only(53), 55).overline == false)
+    match sgr.apply_sgr_one(only(4), 24).underline
+        SgrNoUnderline => test.assert(true)
+        _              => test.assert(false)
+
+    test.case("a parameter this package does not know changes nothing")
+    test.assert(sgr.attrs_eq(sgr.apply_sgr_one(sgr.attrs_default(), 77),
+                             sgr.attrs_default()))
+
+    test.case("and SGR 0 puts everything back")
+    test.assert(sgr.attrs_eq(sgr.apply_sgr_one(fold("1;3;7;31"), 0), sgr.attrs_default()))
+
+@test
+fn test_the_colour_parameters_reach_the_right_field() [io]
+    test.case("30..37 are the eight named foregrounds")
+    match fold("31").fg
+        AnsiIndexed(i) => test.assert(i == 1)
+        _              => test.assert(false)
+
+    test.case("90..97 are their bright forms, 8..15")
+    match fold("93").fg
+        AnsiIndexed(i) => test.assert(i == 11)
+        _              => test.assert(false)
+
+    test.case("40..47 and 100..107 are the backgrounds")
+    match fold("42").bg
+        AnsiIndexed(i) => test.assert(i == 2)
+        _              => test.assert(false)
+    match fold("104").bg
+        AnsiIndexed(i) => test.assert(i == 12)
+        _              => test.assert(false)
+
+    test.case("39, 49 and 59 give each role back to the terminal")
+    match sgr.apply_sgr_one(fold("31"), 39).fg
+        AnsiDefaultColor => test.assert(true)
+        _                => test.assert(false)
+    match sgr.apply_sgr_one(fold("42"), 49).bg
+        AnsiDefaultColor => test.assert(true)
+        _                => test.assert(false)
+    match sgr.apply_sgr_one(fold("58;5;9"), 59).underline_color
+        AnsiDefaultColor => test.assert(true)
+        _                => test.assert(false)
+
+@test
+fn test_an_extended_colour_is_read_in_both_spellings() [io]
+    test.case("the semicolon form, indexed")
+    match sgr.read_extended_color(params_of_csi("38;5;200"), 0)
+        Some(read) =>
+            test.assert(read.consumed == 3)
+            match read.color
+                AnsiIndexed(i) => test.assert(i == 200)
+                _              => test.assert(false)
+        None       => test.assert(false)
+
+    test.case("the colon form, indexed")
+    match sgr.read_extended_color(params_of_csi("38:5:200"), 0)
+        Some(read) =>
+            test.assert(read.consumed == 1)
+            match read.color
+                AnsiIndexed(i) => test.assert(i == 200)
+                _              => test.assert(false)
+        None       => test.assert(false)
+
+    test.case("T.416's colon form with the empty colour-space slot")
+    match sgr.read_extended_color(params_of_csi("38:2::1:2:3"), 0)
+        Some(read) =>
+            test.assert(read.consumed == 1)
+            match read.color
+                AnsiTrueColor(r, g, b) =>
+                    test.assert(r == 1)
+                    test.assert(g == 2)
+                    test.assert(b == 3)
+                _                      => test.assert(false)
+        None       => test.assert(false)
+
+    test.case("and the shorter colon form terminals also send")
+    match sgr.read_extended_color(params_of_csi("38:2:4:5:6"), 0)
+        Some(read) =>
+            match read.color
+                AnsiTrueColor(r, g, b) =>
+                    test.assert(r == 4)
+                    test.assert(g == 5)
+                    test.assert(b == 6)
+                _                      => test.assert(false)
+        None       => test.assert(false)
+
+    test.case("a channel outside 0..255 is held inside it rather than refused")
+    match sgr.read_extended_color(params_of_csi("38;2;300;20;30"), 0)
+        Some(read) =>
+            match read.color
+                AnsiTrueColor(r, _, _) => test.assert(r == 255)
+                _                      => test.assert(false)
+        None       => test.assert(false)
+
+    test.case("a truncated colour is not a colour")
+    match sgr.read_extended_color(params_of_csi("38;2;1"), 0)
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+    match sgr.read_extended_color(params_of_csi("38;5"), 0)
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+    match sgr.read_extended_color(params_of_csi("38;9;1"), 0)
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+    match sgr.read_extended_color(params_of_csi("38:9:1"), 0)
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+    match sgr.read_extended_color(params_of_csi("38:5"), 0)
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+
+    test.case("and a parameter that is not 38, 48 or 58 is not one either")
+    match sgr.read_extended_color(params_of_csi("1"), 0)
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+
+@test
+fn test_an_extended_colour_inside_a_longer_list_does_not_eat_its_neighbours() [io]
+    // The bug the `consumed` count exists to prevent: without it the
+    // 30 of `38;2;10;20;30` lands on the fold as "black foreground".
+    let a = fold("1;38;2;10;20;30;3")
+
+    test.case("the styles on either side of the colour are both set")
+    test.assert(a.bold)
+    test.assert(a.italic)
+
+    test.case("and the colour is the one that was written")
+    match a.fg
+        AnsiTrueColor(r, g, b) =>
+            test.assert(r == 10)
+            test.assert(g == 20)
+            test.assert(b == 30)
+        _                      => test.assert(false)
+
+    test.case("a background and an underline colour fold the same way")
+    match fold("48;5;17").bg
+        AnsiIndexed(i) => test.assert(i == 17)
+        _              => test.assert(false)
+    match fold("58:2::7:8:9").underline_color
+        AnsiTrueColor(r, _, _) => test.assert(r == 7)
+        _                      => test.assert(false)
+
+    test.case("and a malformed one is skipped without taking the rest with it")
+    test.assert(fold("38;9;1;3").italic)
+
+@test
+fn test_the_colon_underline_styles_fold_on() [io]
+    test.case("4:0 through 4:5")
+    match fold("4:0").underline
+        SgrNoUnderline => test.assert(true)
+        _              => test.assert(false)
+    match fold("4:1").underline
+        SgrSingleUnderline => test.assert(true)
+        _                  => test.assert(false)
+    match fold("4:2").underline
+        SgrDoubleUnderline => test.assert(true)
+        _                  => test.assert(false)
+    match fold("4:3").underline
+        SgrCurlyUnderline => test.assert(true)
+        _                 => test.assert(false)
+    match fold("4:4").underline
+        SgrDottedUnderline => test.assert(true)
+        _                  => test.assert(false)
+    match fold("4:5").underline
+        SgrDashedUnderline => test.assert(true)
+        _                  => test.assert(false)
+
+    test.case("and a style nobody has defined yet is still an underline")
+    match fold("4:9").underline
+        SgrSingleUnderline => test.assert(true)
+        _                  => test.assert(false)
+
+// ── SGR: the inverse ────────────────────────────────────────────────
+
+@test
+fn test_a_transition_emits_only_what_changed() [io]
+    let plain = sgr.attrs_default()
+
+    test.case("nothing changed, nothing emitted")
+    test.assert(list.len(sgr.sgr_transition(plain, plain)) == 0)
+    test.assert(list.len(seqwrite.sgr_change([], plain, plain)) == 0)
+
+    test.case("bold on is one parameter")
+    test.assert(same(seqwrite.sgr_change([], plain, only(1)), [e(), 0x5B, 0x31, 0x6D]))
+
+    test.case("bold off is 22, because 21 means something else")
+    test.assert(same(seqwrite.sgr_change([], only(1), plain), [e(), 0x5B, 0x32, 0x32, 0x6D]))
+
+    test.case("22 clears both, so bold-and-dim to dim-alone is 22 then 2")
+    let both = sgr.apply_sgr_one(only(1), 2)
+    test.assert(same(seqwrite.sgr_change([], both, only(2)),
+                     [e(), 0x5B, 0x32, 0x32, 0x3B, 0x32, 0x6D]))
+
+    test.case("and dim to bold-and-dim adds only the 1")
+    test.assert(same(seqwrite.sgr_change([], only(2), both), [e(), 0x5B, 0x31, 0x6D]))
+
+    test.case("bold-and-dim to bold alone is 22 then 1, for the same reason")
+    test.assert(same(seqwrite.sgr_change([], both, only(1)),
+                     [e(), 0x5B, 0x32, 0x32, 0x3B, 0x31, 0x6D]))
+
+    test.case("and plain to dim alone is just the 2")
+    test.assert(same(seqwrite.sgr_change([], plain, only(2)), [e(), 0x5B, 0x32, 0x6D]))
+
+@test
+fn test_every_flag_transitions_in_both_directions() [io]
+    let plain = sgr.attrs_default()
+    let ons = [3, 5, 7, 8, 9, 53]
+    let offs = [23, 25, 27, 28, 29, 55]
+    var turned_on = 0
+    var turned_off = 0
+    for i in 0..list.len(ons)
+        let set = only(list.get(ons, i))
+        let on_params = sgr.sgr_transition(plain, set)
+        let off_params = sgr.sgr_transition(set, plain)
+        if list.len(on_params) == 1 and list.get(on_params, 0) == list.get(ons, i)
+            turned_on = turned_on + 1
+        if list.len(off_params) == 1 and list.get(off_params, 0) == list.get(offs, i)
+            turned_off = turned_off + 1
+
+    test.case("each of the six emits its own set parameter")
+    test.assert(turned_on == 6)
+
+    test.case("and its own clear parameter")
+    test.assert(turned_off == 6)
+
+@test
+fn test_a_colour_transition_emits_the_colour_and_nothing_else() [io]
+    let plain = sgr.attrs_default()
+
+    test.case("a named foreground is one parameter")
+    test.assert(same(seqwrite.sgr_change([], plain, fold("31")),
+                     [e(), 0x5B, 0x33, 0x31, 0x6D]))
+
+    test.case("and back to the terminal's own is 39")
+    test.assert(same(seqwrite.sgr_change([], fold("31"), plain),
+                     [e(), 0x5B, 0x33, 0x39, 0x6D]))
+
+    test.case("a background is its own family")
+    test.assert(same(seqwrite.sgr_change([], plain, fold("42")),
+                     [e(), 0x5B, 0x34, 0x32, 0x6D]))
+    test.assert(same(seqwrite.sgr_change([], fold("42"), plain),
+                     [e(), 0x5B, 0x34, 0x39, 0x6D]))
+
+    test.case("an underline colour has a family of its own too")
+    test.assert(same(seqwrite.sgr_change([], plain, fold("58;5;9")),
+                     [e(), 0x5B, 0x35, 0x38, 0x3B, 0x35, 0x3B, 0x39, 0x6D]))
+    test.assert(same(seqwrite.sgr_change([], fold("58;5;9"), plain),
+                     [e(), 0x5B, 0x35, 0x39, 0x6D]))
+
+    test.case("a 256-colour index above 15 is the extended form")
+    test.assert(same(seqwrite.sgr_change([], plain, fold("38;5;200")),
+                     [e(), 0x5B, 0x33, 0x38, 0x3B, 0x35, 0x3B,
+                      0x32, 0x30, 0x30, 0x6D]))
+
+    test.case("and 24-bit colour is written out in full")
+    test.assert(same(seqwrite.sgr_change([], plain, fold("38;2;1;2;3")),
+                     [e(), 0x5B, 0x33, 0x38, 0x3B, 0x32, 0x3B, 0x31, 0x3B,
+                      0x32, 0x3B, 0x33, 0x6D]))
+
+@test
+fn test_a_colon_only_underline_style_survives_the_writer() [io]
+    // The case the published `[Int]` return cannot carry, which is why
+    // `sgr_transition_sub` exists.
+    let plain = sgr.attrs_default()
+    let curly = fold("4:3")
+
+    test.case("the writer emits the colon form")
+    test.assert(same(seqwrite.sgr_change([], plain, curly),
+                     [e(), 0x5B, 0x34, 0x3A, 0x33, 0x6D]))
+
+    test.case("and it reads back as the style it was")
+    match sgr.apply_sgr(plain, vtparse.params_of(reparse(seqwrite.sgr_change([], plain, curly)).parser))
+        a =>
+            match a.underline
+                SgrCurlyUnderline => test.assert(true)
+                _                 => test.assert(false)
+
+    test.case("the flat list carries a plain underline instead, which is safe")
+    let flat = sgr.sgr_transition(plain, curly)
+    test.assert(list.len(flat) == 1)
+    test.assert(list.get(flat, 0) == 4)
+
+    test.case("the other three colon styles write their own sub-parameter")
+    test.assert(same(seqwrite.sgr_change([], plain, fold("4:2")),
+                     [e(), 0x5B, 0x34, 0x3A, 0x32, 0x6D]))
+    test.assert(same(seqwrite.sgr_change([], plain, fold("4:4")),
+                     [e(), 0x5B, 0x34, 0x3A, 0x34, 0x6D]))
+    test.assert(same(seqwrite.sgr_change([], plain, fold("4:5")),
+                     [e(), 0x5B, 0x34, 0x3A, 0x35, 0x6D]))
+
+    test.case("a plain underline needs no colon in either shape")
+    test.assert(same(seqwrite.sgr_change([], plain, only(4)), [e(), 0x5B, 0x34, 0x6D]))
+
+    test.case("and turning one off is 24")
+    test.assert(same(seqwrite.sgr_change([], curly, plain), [e(), 0x5B, 0x32, 0x34, 0x6D]))
+
+@test
+fn test_a_reset_is_emitted_only_when_it_is_the_shorter_answer() [io]
+    let loaded = fold("1;3;7;9;53;31")
+
+    test.case("from a loaded style back to plain, the reset wins")
+    let back = sgr.sgr_transition(loaded, sgr.attrs_default())
+    test.assert(list.len(back) == 1)
+    test.assert(list.get(back, 0) == 0)
+
+    test.case("from plain to a loaded style there is nothing to reset")
+    let there = sgr.sgr_transition(sgr.attrs_default(), loaded)
+    test.assert(list.get(there, 0) == 1)
+
+    test.case("and a full style always opens with the 0 that clears")
+    let whole = sgr.sgr_full(loaded)
+    test.assert(list.get(whole, 0) == 0)
+    test.assert(list.len(whole) == 7)
+
+    test.case("a full style of nothing is just the reset")
+    test.assert(list.len(sgr.sgr_full(sgr.attrs_default())) == 1)
+
+    test.case("and the unflattened full style carries the colon group")
+    let sub = sgr.sgr_full_sub(fold("4:3"))
+    test.assert(vtparse.params_count(sub) == 2)
+    test.assert(vtparse.params_sub_count(sub, 1) == 2)
+
+@test
+fn test_a_full_style_names_every_field_it_has() [io]
+    let everything = fold("1;2;3;5;7;8;9;53;4:3;31;42;58;5;9")
+    let whole = sgr.sgr_full(everything)
+
+    test.case("the reset, nine flags and three colours")
+    test.assert(list.get(whole, 0) == 0)
+    test.assert(list.len(whole) == 15)
+
+    test.case("and writing it and reading it back gives the same style")
+    let written = seqwrite.csi_params([], sgr.sgr_full_sub(everything), 0x6D)
+    let read = sgr.apply_sgr(sgr.attrs_default(),
+                             vtparse.params_of(reparse(written).parser))
+    test.assert(sgr.attrs_eq(read, everything))
+
+// ── SGR: colours on their own ───────────────────────────────────────
+
+@test
+fn test_a_colour_serialises_by_its_form_and_its_role() [io]
+    test.case("the default colour is 39, 49 or 59")
+    test.assert(same_ints(sgr.color_params(AnsiDefaultColor, false, false), [39]))
+    test.assert(same_ints(sgr.color_params(AnsiDefaultColor, true, false), [49]))
+    test.assert(same_ints(sgr.color_params(AnsiDefaultColor, false, true), [59]))
+
+    test.case("an index below 8 is a named colour")
+    test.assert(same_ints(sgr.color_params(AnsiIndexed(3), false, false), [33]))
+    test.assert(same_ints(sgr.color_params(AnsiIndexed(3), true, false), [43]))
+
+    test.case("8..15 are the bright ones")
+    test.assert(same_ints(sgr.color_params(AnsiIndexed(9), false, false), [91]))
+    test.assert(same_ints(sgr.color_params(AnsiIndexed(9), true, false), [101]))
+
+    test.case("above 15 is the extended form")
+    test.assert(same_ints(sgr.color_params(AnsiIndexed(200), false, false), [38, 5, 200]))
+    test.assert(same_ints(sgr.color_params(AnsiIndexed(200), true, false), [48, 5, 200]))
+
+    test.case("an underline colour has no named form at all")
+    test.assert(same_ints(sgr.color_params(AnsiIndexed(3), false, true), [58, 5, 3]))
+    test.assert(same_ints(sgr.color_params(AnsiIndexed(9), false, true), [58, 5, 9]))
+
+    test.case("and 24-bit is five parameters in every role")
+    test.assert(same_ints(sgr.color_params(AnsiTrueColor(1, 2, 3), false, false),
+                          [38, 2, 1, 2, 3]))
+    test.assert(same_ints(sgr.color_params(AnsiTrueColor(1, 2, 3), true, false),
+                          [48, 2, 1, 2, 3]))
+    test.assert(same_ints(sgr.color_params(AnsiTrueColor(1, 2, 3), false, true),
+                          [58, 2, 1, 2, 3]))
+
+    test.case("a channel outside the byte is held inside it")
+    test.assert(same_ints(sgr.color_params(AnsiTrueColor(0 - 5, 999, 3), false, false),
+                          [38, 2, 0, 255, 3]))
+    test.assert(same_ints(sgr.color_params(AnsiIndexed(999), false, false), [38, 5, 255]))
+
+// Whether a parameter list is exactly these numbers.
+fn same_ints(got: [Int], expect: [Int]) -> Bool
+    if list.len(got) != list.len(expect)
+        false
+    else
+        var ok = true
+        for i in 0..list.len(expect)
+            if list.get(got, i) != list.get(expect, i)
+                ok = false
+        ok
+
+@test
+fn test_the_cube_and_the_greys_are_the_values_the_spec_fixes() [io]
+    test.case("the cube's levels are 0, 95, 135, 175, 215 and 255")
+    match sgr.indexed_to_rgb(16 + 36 * 1)
+        Some(c) => test.assert(c.r == 95)
+        None    => test.assert(false)
+    match sgr.indexed_to_rgb(16 + 36 * 5 + 6 * 3 + 2)
+        Some(c) =>
+            test.assert(c.r == 255)
+            test.assert(c.g == 175)
+            test.assert(c.b == 135)
+        None    => test.assert(false)
+
+    test.case("the greys run from 8 to 238 in steps of 10")
+    match sgr.indexed_to_rgb(232)
+        Some(c) => test.assert(c.r == 8)
+        None    => test.assert(false)
+    match sgr.indexed_to_rgb(255)
+        Some(c) =>
+            test.assert(c.r == 238)
+            test.assert(c.g == 238)
+            test.assert(c.b == 238)
+        None    => test.assert(false)
+
+    test.case("and nothing below 16 or outside a byte has an answer")
+    match sgr.indexed_to_rgb(0)
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+    match sgr.indexed_to_rgb(15)
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+    match sgr.indexed_to_rgb(0 - 1)
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+
+@test
+fn test_the_nearest_palette_entry_is_the_nearest_one() [io]
+    test.case("a colour that is in the cube answers with itself")
+    test.assert(sgr.nearest_index(SgrRgb { r: 0, g: 0, b: 0 }) == 16)
+    test.assert(sgr.nearest_index(SgrRgb { r: 255, g: 255, b: 255 }) == 231)
+    test.assert(sgr.nearest_index(SgrRgb { r: 95, g: 0, b: 0 }) == 16 + 36)
+
+    test.case("a grey that is on the ramp answers with the ramp")
+    test.assert(sgr.nearest_index(SgrRgb { r: 18, g: 18, b: 18 }) == 233)
+
+    test.case("and every answer is inside the part of the palette we can know")
+    let i = sgr.nearest_index(SgrRgb { r: 128, g: 64, b: 200 })
+    test.assert(i >= 16 and i <= 255)
+
+@test
+fn test_downgrading_answers_inside_the_depth_it_was_given() [io]
+    let bright = AnsiTrueColor(200, 30, 30)
+
+    test.case("no colour at all leaves the terminal's own")
+    match sgr.downgrade(bright, SgrNoColor)
+        AnsiDefaultColor => test.assert(true)
+        _                => test.assert(false)
+    match sgr.downgrade(AnsiIndexed(3), SgrNoColor)
+        AnsiDefaultColor => test.assert(true)
+        _                => test.assert(false)
+
+    test.case("true colour is left alone at full depth")
+    match sgr.downgrade(bright, SgrDepthTrue)
+        AnsiTrueColor(r, _, _) => test.assert(r == 200)
+        _                      => test.assert(false)
+
+    test.case("256 colours quantise true colour and leave an index alone")
+    match sgr.downgrade(bright, SgrDepth256)
+        AnsiIndexed(i) => test.assert(i >= 16 and i <= 255)
+        _              => test.assert(false)
+    match sgr.downgrade(AnsiIndexed(200), SgrDepth256)
+        AnsiIndexed(i) => test.assert(i == 200)
+        _              => test.assert(false)
+    match sgr.downgrade(AnsiDefaultColor, SgrDepth256)
+        AnsiDefaultColor => test.assert(true)
+        _                => test.assert(false)
+
+    test.case("sixteen colours land on the three bits plus brightness")
+    match sgr.downgrade(AnsiTrueColor(0, 0, 0), SgrDepth16)
+        AnsiIndexed(i) => test.assert(i == 0)
+        _              => test.assert(false)
+    match sgr.downgrade(AnsiTrueColor(255, 255, 255), SgrDepth16)
+        AnsiIndexed(i) => test.assert(i == 15)
+        _              => test.assert(false)
+    match sgr.downgrade(AnsiTrueColor(140, 0, 0), SgrDepth16)
+        AnsiIndexed(i) => test.assert(i == 1)
+        _              => test.assert(false)
+
+    test.case("an index already inside the sixteen is left alone")
+    match sgr.downgrade(AnsiIndexed(3), SgrDepth16)
+        AnsiIndexed(i) => test.assert(i == 3)
+        _              => test.assert(false)
+
+    test.case("one above it is resolved through the cube first")
+    match sgr.downgrade(AnsiIndexed(231), SgrDepth16)
+        AnsiIndexed(i) => test.assert(i == 15)
+        _              => test.assert(false)
+
+    test.case("and the default colour stays the default")
+    match sgr.downgrade(AnsiDefaultColor, SgrDepth16)
+        AnsiDefaultColor => test.assert(true)
+        _                => test.assert(false)
+
+// ── Queries ─────────────────────────────────────────────────────────
+
+@test
+fn test_every_query_is_the_bytes_its_terminal_expects() [io]
+    test.case("DSR 6 and DSR 5")
+    test.assert(same(vtquery.write_query([], AnsiCursorPositionQuery),
+                     [e(), 0x5B, 0x36, 0x6E]))
+    test.assert(same(vtquery.write_query([], AnsiDeviceStatusQuery),
+                     [e(), 0x5B, 0x35, 0x6E]))
+
+    test.case("primary and secondary DA")
+    test.assert(same(vtquery.write_query([], AnsiDeviceAttributesQuery),
+                     [e(), 0x5B, 0x63]))
+    test.assert(same(vtquery.write_query([], AnsiSecondaryAttributesQuery),
+                     [e(), 0x5B, 0x3E, 0x63]))
+
+    test.case("the text-area size")
+    test.assert(same(vtquery.write_query([], AnsiTextAreaSizeQuery),
+                     [e(), 0x5B, 0x31, 0x38, 0x74]))
+
+    test.case("DECRQM for a private mode is `CSI ? Pd $ p`")
+    test.assert(same(vtquery.write_query([], AnsiModeQuery(AnsiSyncOutput)),
+                     [e(), 0x5B, 0x3F, 0x32, 0x30, 0x32, 0x36, 0x24, 0x70]))
+
+    test.case("and for an ANSI mode it carries no marker")
+    test.assert(same(vtquery.write_query([], AnsiModeQuery(AnsiInsertMode)),
+                     [e(), 0x5B, 0x34, 0x24, 0x70]))
+
+@test
+fn test_every_reply_writes_and_reads_back_as_itself() [io]
+    test.case("CPR")
+    let cpr = vtquery.write_reply([], AnsiCursorPositionReply(12, 40))
+    test.assert(same(cpr, [e(), 0x5B, 0x31, 0x32, 0x3B, 0x34, 0x30, 0x52]))
+    match read_back(cpr)
+        Some(AnsiCursorPositionReply(row, col)) =>
+            test.assert(row == 12)
+            test.assert(col == 40)
+        _                                       => test.assert(false)
+
+    test.case("DSR")
+    let ok = vtquery.write_reply([], AnsiDeviceOkReply)
+    test.assert(same(ok, [e(), 0x5B, 0x30, 0x6E]))
+    match read_back(ok)
+        Some(AnsiDeviceOkReply) => test.assert(true)
+        _                       => test.assert(false)
+
+    test.case("primary DA, whose options are a list")
+    let da = vtquery.write_reply([], AnsiDeviceAttributesReply(62, [22]))
+    test.assert(same(da, [e(), 0x5B, 0x3F, 0x36, 0x32, 0x3B, 0x32, 0x32, 0x63]))
+    match read_back(da)
+        Some(AnsiDeviceAttributesReply(class, options)) =>
+            test.assert(class == 62)
+            test.assert(list.len(options) == 1)
+            test.assert(list.get(options, 0) == 22)
+        _                                               => test.assert(false)
+
+    test.case("primary DA with no options at all")
+    match read_back(vtquery.write_reply([], AnsiDeviceAttributesReply(6, [])))
+        Some(AnsiDeviceAttributesReply(class, options)) =>
+            test.assert(class == 6)
+            test.assert(list.len(options) == 0)
+        _                                               => test.assert(false)
+
+    test.case("secondary DA")
+    let sda = vtquery.write_reply([], AnsiSecondaryAttributesReply(0, 1, 0))
+    test.assert(same(sda, [e(), 0x5B, 0x3E, 0x30, 0x3B, 0x31, 0x3B, 0x30, 0x63]))
+    match read_back(sda)
+        Some(AnsiSecondaryAttributesReply(kind, version, patch)) =>
+            test.assert(kind == 0)
+            test.assert(version == 1)
+            test.assert(patch == 0)
+        _                                                        => test.assert(false)
+
+    test.case("the text-area size")
+    let size = vtquery.write_reply([], AnsiTextAreaSizeReply(24, 80))
+    test.assert(same(size, [e(), 0x5B, 0x38, 0x3B, 0x32, 0x34, 0x3B,
+                            0x38, 0x30, 0x74]))
+    match read_back(size)
+        Some(AnsiTextAreaSizeReply(rows, cols)) =>
+            test.assert(rows == 24)
+            test.assert(cols == 80)
+        _                                       => test.assert(false)
+
+    test.case("and DECRPM, whose five settings are five different answers")
+    var settings = 0
+    for s in [0, 1, 2, 3, 4]
+        let written = vtquery.write_reply([], AnsiModeReply(2026, setting_for(s)))
+        match read_back(written)
+            Some(AnsiModeReply(mode, setting)) =>
+                if mode == 2026 and setting_code(setting) == s
+                    settings = settings + 1
+            _                                  =>
+                settings = settings
+    test.assert(settings == 5)
+
+    test.case("a setting number nobody defined reads back as unknown")
+    match read_back(seqwrite.csi([], 0x3F, [2026, 9], [0x24], 0x79))
+        Some(AnsiModeReply(_, setting)) => test.assert(setting_code(setting) == 0)
+        _                               => test.assert(false)
+
+// The reply a written buffer parses back into.
+fn read_back(out: [u8]) -> ?vtquery.AnsiReply
+    let step = reparse(out)
+    match step.action
+        AnsiCsiDispatch(f) => vtquery.reply_of(step.parser, f)
+        _                  => None
+
+// The five DECRPM settings, by number.
+fn setting_for(n: Int) -> vtquery.AnsiModeSetting
+    if n == 1
+        AnsiModeIsSet
+    else if n == 2
+        AnsiModeIsReset
+    else if n == 3
+        AnsiModeAlwaysSet
+    else if n == 4
+        AnsiModeAlwaysReset
+    else
+        AnsiModeUnknown
+
+// And back again.
+fn setting_code(s: vtquery.AnsiModeSetting) -> Int
+    match s
+        AnsiModeUnknown     => 0
+        AnsiModeIsSet       => 1
+        AnsiModeIsReset     => 2
+        AnsiModeAlwaysSet   => 3
+        AnsiModeAlwaysReset => 4
+
+@test
+fn test_a_reply_reads_the_same_off_a_snapshot_as_off_the_parser() [io]
+    let written = [vtquery.write_reply([], AnsiCursorPositionReply(1, 2)),
+                   vtquery.write_reply([], AnsiDeviceOkReply),
+                   vtquery.write_reply([], AnsiDeviceAttributesReply(62, [22, 1])),
+                   vtquery.write_reply([], AnsiSecondaryAttributesReply(1, 2, 3)),
+                   vtquery.write_reply([], AnsiTextAreaSizeReply(24, 80)),
+                   vtquery.write_reply([], AnsiModeReply(2026, AnsiModeIsSet))]
+    var agree = 0
+    for out in written
+        let step = reparse(out)
+        match step.action
+            AnsiCsiDispatch(f) =>
+                let from_parser = vtquery.reply_of(step.parser, f)
+                let from_snap = vtquery.reply_of_params(vtparse.params_of(step.parser), f)
+                match from_parser
+                    Some(a) =>
+                        match from_snap
+                            Some(b) =>
+                                if a == b
+                                    agree = agree + 1
+                            None    =>
+                                agree = agree
+                    None    =>
+                        agree = agree
+            _                  =>
+                agree = agree
+
+    test.case("all six replies read the same both ways")
+    test.assert(agree == 6)
+
+@test
+fn test_a_dispatch_that_is_not_a_reply_is_not_forced_into_one() [io]
+    test.case("an ordinary erase is not a reply")
+    match read_back(seqwrite.erase_display([], AnsiEraseAll))
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+
+    test.case("`CSI 1 R` has too few parameters to be a cursor position")
+    match read_back(seqwrite.csi([], 0, [1], [], 0x52))
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+
+    test.case("`CSI 3 n` is a DSR request, not a DSR answer")
+    match read_back(seqwrite.csi([], 0, [3], [], 0x6E))
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+
+    test.case("`CSI 9 ; 24 ; 80 t` is not the text-area answer")
+    match read_back(seqwrite.csi([], 0, [9, 24, 80], [], 0x74))
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+
+    test.case("a DECRPM answer without its `$` intermediate is not one")
+    match read_back(seqwrite.csi([], 0x3F, [2026, 1], [], 0x79))
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+
+    test.case("and an empty snapshot answers None for every final byte")
+    match vtquery.reply_of_params(vtparse.params_empty(), 0x52)
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+    match vtquery.reply_of_params(vtparse.params_empty(), 0x74)
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+
+@test
+fn test_a_query_is_matched_to_its_answer_and_to_nothing_else() [io]
+    let queries = [AnsiCursorPositionQuery, AnsiDeviceStatusQuery,
+                   AnsiDeviceAttributesQuery, AnsiSecondaryAttributesQuery,
+                   AnsiTextAreaSizeQuery, AnsiModeQuery(AnsiSyncOutput)]
+    let replies = [AnsiCursorPositionReply(1, 1), AnsiDeviceOkReply,
+                   AnsiDeviceAttributesReply(62, []),
+                   AnsiSecondaryAttributesReply(0, 0, 0),
+                   AnsiTextAreaSizeReply(24, 80),
+                   AnsiModeReply(2026, AnsiModeIsSet)]
+    var matched = 0
+    var crossed = 0
+    for i in 0..6
+        for j in 0..6
+            if vtquery.answers(list.get(queries, i), list.get(replies, j))
+                if i == j
+                    matched = matched + 1
+                else
+                    crossed = crossed + 1
+
+    test.case("each query answers to its own reply")
+    test.assert(matched == 6)
+
+    test.case("and to no other")
+    test.assert(crossed == 0)
+
+    test.case("two mode queries for different modes do not answer each other")
+    test.assert(vtquery.answers(AnsiModeQuery(AnsiSyncOutput),
+                                AnsiModeReply(2004, AnsiModeIsSet)) == false)
+    test.assert(vtquery.answers(AnsiModeQuery(AnsiBracketedPaste),
+                                AnsiModeReply(2004, AnsiModeIsSet)))

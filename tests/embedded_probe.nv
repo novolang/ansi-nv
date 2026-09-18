@@ -19,15 +19,22 @@
 // `seqwrite`'s use of it — the whole package, because there is no host
 // half to leave behind.  `vtquery` comes in with `seqwrite` too.
 //
-// WHAT THE TIER ACTUALLY CHECKS on an interface package is narrower
-// than it will be on the implementation, and saying so is more useful
-// than pretending otherwise: every body here is a `todo()`, so what
-// links today is the SIGNATURES and the types — a `[Int]` field, a
-// `?Int` return, a nested enum in a match arm.  The list-shaped fields
-// on `AnsiParser` will have to become a fixed-capacity buffer before
-// any of it can run on a device, and heapless-nv is where that comes
-// from.  That is a known cost of the implementation step, not a
-// surprise waiting in it.
+// WHAT THE TIER CHECKS NOW THAT THE BODIES ARE HERE.  On the 0.0.x
+// interface every body was a `todo()`, so what linked was the
+// signatures and the types.  With 0.1.0 it is the code: the state
+// machine's twelve arms, the decimal writer, the UTF-8 encoder and the
+// SGR tables all have to compile and link for a Cortex-M4.
+//
+// WHAT IT STILL DOES NOT CHECK IS THE STORAGE.  `AnsiParser` keeps its
+// parameters, its groups and its intermediates in `[Int]` fields,
+// which is the shape the published interface has, and a growable list
+// is not what a device with no allocator wants.  Collecting a
+// parameter list therefore allocates; the ground state — text, the C0
+// controls, a codepoint — does not, and that is the path a serial
+// console spends its bytes on.  `tests/alloc_probe.nv` is where that
+// claim is read off the emitted LLVM.  Turning those three fields into
+// heapless-nv's fixed-capacity buffer is a breaking change to a struct
+// seven packages depend on, so it waits for the minor that makes it.
 
 use vtparse
 use seqwrite
@@ -54,7 +61,10 @@ fn score() -> Int
             n = n + 4
     if vtparse.param_at(step.parser, 0, 1) == 1
         n = n + 1
-    if vtparse.is_settled(step.parser)
+    // ESC opened a sequence, so the machine is deliberately NOT
+    // settled here: this is the check that says the byte did
+    // something.
+    if vtparse.is_settled(step.parser) == false
         n = n + 1
     if vtparse.private_marker_of(step.parser) == vtparse.NO_PRIVATE_MARKER
         n = n + 1
@@ -74,9 +84,11 @@ fn score() -> Int
 fn main() [hw, time]
     bsp.board.init()
     // 7 is the number of checks in `score` on the path a linked build
-    // takes.  The count is printed on a failure rather than only
-    // compared, so a device that disagrees with the host says HOW MANY
-    // it lost and a bisect has somewhere to start.
+    // takes: one for the action ESC produced, and one for each of the
+    // six answers after it.  The interface release compared against 7
+    // while `score` could only reach 6, because it asked whether a
+    // machine that had just read an ESC was settled; the arithmetic is
+    // corrected here rather than the check removed.
     let n = score()
     if n == 7
         hal.uart.write("PASS: ansi-embedded\n")

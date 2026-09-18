@@ -175,6 +175,20 @@ fn query_kind(q: AnsiQuery) -> Int
         AnsiTextAreaSizeQuery        => 4
         AnsiModeQuery(_)             => 5
 
+// The mode a DECRQM asked about, and -1 for a question that is not
+// one.
+fn query_mode(q: AnsiQuery) -> Int
+    match q
+        AnsiModeQuery(mode) => seqwrite.mode_number(mode)
+        _                   => 0 - 1
+
+// The mode a DECRPM answered about, and -1 for an answer that is not
+// one.
+fn reply_mode(r: AnsiReply) -> Int
+    match r
+        AnsiModeReply(n, _) => n
+        _                   => 0 - 1
+
 // Which of the six answers this is.
 fn reply_kind(r: AnsiReply) -> Int
     match r
@@ -267,12 +281,12 @@ pub fn reply_of_params(params: vtparse.AnsiParams, final_byte: Int) -> ?AnsiRepl
 // and matching on the variant is not enough: two DECRQMs for different
 // modes come back as two `AnsiModeReply`s that differ only in a field.
 pub fn answers(q: AnsiQuery, r: AnsiReply) -> Bool
-    match q
-        AnsiModeQuery(mode) =>
-            match r
-                AnsiModeReply(n, _) => seqwrite.mode_number(mode) == n
-                _                   => false
-        _                   => query_kind(q) == reply_kind(r)
+    // The shape has to agree, and so does the mode number — which is
+    // -1 on both sides for the five questions that have only one
+    // answer each, and the actual number for DECRQM, where two
+    // queries in flight come back as two `AnsiModeReply`s that differ
+    // in nothing else.
+    query_kind(q) == reply_kind(r) and query_mode(q) == reply_mode(r)
 
 // write_reply appends the answer a TERMINAL would send.
 //
