@@ -152,6 +152,12 @@ on toolchain 0.9.1.
   the struct be `@value`; it changes a type seven packages depend on,
   so it waits for the release that makes it. The 0.0.1 CHANGELOG said
   this would be the cost, and it is.
+- **A dependent's constraint has to move.** The seven packages that
+  depend on this one — termios-nv, tui-nv, clipboard-nv, table-nv,
+  progress-nv, logging-nv and logging-core-nv — declare
+  `ansi-nv = "^0.0.1"`, and under the pre-1.0 rule `^0.0.1` does not
+  admit `0.1.0`. Each of them needs `^0.1.0` before it resolves against
+  this release.
 - **The minimum toolchain is now 0.9.1**, which is what this release
   was built, tested and measured on. 0.0.x claimed 0.8.9, which was
   never checked against a body.

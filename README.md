@@ -8,19 +8,23 @@ after them. The grammar and the standard sequences are specified in
 and the ones terminals in use actually accept are documented in
 [xterm's `ctlseqs`](https://invisible-island.net/xterm/ctlseqs/ctlseqs.html).
 This package is that layer on its own, with no terminal under it.
-Three packages on the registry are built on it:
+Seven packages on the registry are built on it:
 [termios-nv](https://novo-lang.org/packages/termios-nv),
-[clipboard-nv](https://novo-lang.org/packages/clipboard-nv) and
-[tui-nv](https://novo-lang.org/packages/tui-nv).
+[tui-nv](https://novo-lang.org/packages/tui-nv),
+[clipboard-nv](https://novo-lang.org/packages/clipboard-nv),
+[table-nv](https://novo-lang.org/packages/table-nv),
+[progress-nv](https://novo-lang.org/packages/progress-nv),
+[logging-nv](https://novo-lang.org/packages/logging-nv) and
+[logging-core-nv](https://novo-lang.org/packages/logging-core-nv).
 
-**Status: implemented, and new.** Every function has a body and the
-suites are green. The parser is the one
-[novo-vte](https://novo-lang.org/packages/novo-vte) has read terminal
-output with since 2026: the same state machine, moved out from under
-its grid of cells and given the writing half it did not have. novo-vte
-will depend on this package rather than carry its own copy. The API is
-marked experimental because it was designed before it was implemented
-and no program outside this package has used it yet.
+**Status: implemented.** Every function has a body and the suites are
+green. The parser is the one
+[novo-vte](https://novo-lang.org/packages/novo-vte) reads terminal
+output with: the same state machine, moved out from under its grid of
+cells and given the writing half it did not have. novo-vte will depend
+on this package rather than carry its own copy of it. The API is marked
+experimental because it was designed before it was implemented, and no
+program outside this package has used it yet.
 
 ## What it is
 
@@ -303,10 +307,11 @@ a reader can check the number for themselves.
 
 - [novo-vte](https://novo-lang.org/packages/novo-vte) is a terminal
   emulator's model: a grid of cells with a cursor, a scrollback and an
-  alternate screen, which its parser mutates as bytes arrive. It answers
-  what the screen looks like now. This package answers what one byte
-  said, returns an action instead of changing anything, and has a
-  writing half, which novo-vte does not.
+  alternate screen, changed as bytes arrive. It answers what the screen
+  looks like now. This package answers what one byte said, returns an
+  action instead of changing anything, and has a writing half, which
+  novo-vte does not. The state machine here came out of novo-vte, and
+  novo-vte will read this package rather than keep a second copy.
 - [keymap-nv](https://novo-lang.org/packages/keymap-nv) is the same job
   in the other direction: the bytes a terminal sends when a key is
   pressed or the mouse moves, decoded into events.
