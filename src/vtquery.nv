@@ -97,6 +97,94 @@ pub enum AnsiReply
     // DECRPM — `CSI ? <mode> ; <setting> $ y`.
     AnsiModeReply(mode: Int, setting: AnsiModeSetting)
 
+// ── Reading one back ────────────────────────────────────────────────
+
+// The five replies whose whole content fits in three parameters.
+//
+// `reply_of` and `reply_of_params` both come through here, so the
+// parser path and the snapshot path cannot answer differently — which
+// is the one bug a second copy of this table would eventually have.
+// Primary DA is the exception and is handled by its callers, because
+// its options are a LIST and building one is an allocation this
+// function must not make on the dispatches that are not replies.
+fn decode(marker: Int, count: Int, p0: Int, p1: Int, p2: Int, intermediate: Int,
+          final_byte: Int) -> ?AnsiReply
+    if final_byte == 0x52 and marker == vtparse.NO_PRIVATE_MARKER and count >= 2
+        Some(AnsiCursorPositionReply(p0, p1))
+    else if final_byte == 0x6E and marker == vtparse.NO_PRIVATE_MARKER and p0 == 0
+        Some(AnsiDeviceOkReply)
+    else if final_byte == 0x63 and marker == 0x3E
+        Some(AnsiSecondaryAttributesReply(p0, p1, p2))
+    else if final_byte == 0x74 and marker == vtparse.NO_PRIVATE_MARKER and count >= 3
+        and p0 == 8
+        Some(AnsiTextAreaSizeReply(p1, p2))
+    else if final_byte == 0x79 and marker == 0x3F and intermediate == 0x24 and count >= 2
+        Some(AnsiModeReply(p0, mode_setting(p1)))
+    else
+        None
+
+// Whether a dispatch has primary DA's shape: `CSI ? <class> ; … c`.
+fn is_primary_da(marker: Int, final_byte: Int) -> Bool
+    final_byte == 0x63 and marker == 0x3F
+
+// DECRPM's five answers.  Anything else is `AnsiModeUnknown`, which is
+// also what 0 means, because a terminal reporting a number this
+// revision does not define has not told us the mode is on.
+fn mode_setting(n: Int) -> AnsiModeSetting
+    if n == 1
+        AnsiModeIsSet
+    else if n == 2
+        AnsiModeIsReset
+    else if n == 3
+        AnsiModeAlwaysSet
+    else if n == 4
+        AnsiModeAlwaysReset
+    else
+        AnsiModeUnknown
+
+// The number DECRPM writes for a setting.
+fn setting_number(s: AnsiModeSetting) -> Int
+    match s
+        AnsiModeUnknown     => 0
+        AnsiModeIsSet       => 1
+        AnsiModeIsReset     => 2
+        AnsiModeAlwaysSet   => 3
+        AnsiModeAlwaysReset => 4
+
+// Primary DA's options: every parameter after the terminal class.
+fn options_of(p: vtparse.AnsiParser) -> [Int]
+    var out: [Int] = []
+    for i in 1..vtparse.param_count(p)
+        out = list.push(out, vtparse.param_at(p, i, 0))
+    out
+
+// The same, off a snapshot.
+fn options_of_params(ps: vtparse.AnsiParams) -> [Int]
+    var out: [Int] = []
+    for i in 1..vtparse.params_count(ps)
+        out = list.push(out, vtparse.params_at(ps, i, 0))
+    out
+
+// Which of the six questions this is.
+fn query_kind(q: AnsiQuery) -> Int
+    match q
+        AnsiCursorPositionQuery      => 0
+        AnsiDeviceStatusQuery        => 1
+        AnsiDeviceAttributesQuery    => 2
+        AnsiSecondaryAttributesQuery => 3
+        AnsiTextAreaSizeQuery        => 4
+        AnsiModeQuery(_)             => 5
+
+// Which of the six answers this is.
+fn reply_kind(r: AnsiReply) -> Int
+    match r
+        AnsiCursorPositionReply(_, _)         => 0
+        AnsiDeviceOkReply                     => 1
+        AnsiDeviceAttributesReply(_, _)       => 2
+        AnsiSecondaryAttributesReply(_, _, _) => 3
+        AnsiTextAreaSizeReply(_, _)           => 4
+        AnsiModeReply(_, _)                   => 5
+
 // write_query appends the question to the caller's buffer.
 //
 // ```novo
@@ -109,7 +197,18 @@ pub enum AnsiReply
 //     println(str.from_int(list.len(out)))
 // ```
 pub fn write_query(out: [u8], q: AnsiQuery) -> [u8]
-    todo("ansi-nv.vtquery.write_query")
+    match q
+        AnsiCursorPositionQuery      => seqwrite.csi(out, 0, [6], [], 0x6E)
+        AnsiDeviceStatusQuery        => seqwrite.csi(out, 0, [5], [], 0x6E)
+        AnsiDeviceAttributesQuery    => seqwrite.csi(out, 0, [], [], 0x63)
+        AnsiSecondaryAttributesQuery => seqwrite.csi(out, 0x3E, [], [], 0x63)
+        AnsiTextAreaSizeQuery        => seqwrite.csi(out, 0, [18], [], 0x74)
+        AnsiModeQuery(mode)          =>
+            let marker = if seqwrite.mode_is_private(mode)
+                0x3F
+            else
+                0
+            seqwrite.csi(out, marker, [seqwrite.mode_number(mode)], [0x24], 0x70)
 
 // reply_of reads a CSI dispatch back into a typed reply.
 //
@@ -137,13 +236,30 @@ pub fn write_query(out: [u8], q: AnsiQuery) -> [u8]
 //             _ => println("consumed")
 // ```
 pub fn reply_of(p: vtparse.AnsiParser, final_byte: Int) -> ?AnsiReply
-    todo("ansi-nv.vtquery.reply_of")
+    let marker = vtparse.private_marker_of(p)
+    if is_primary_da(marker, final_byte)
+        Some(AnsiDeviceAttributesReply(vtparse.param_at(p, 0, 0), options_of(p)))
+    else
+        decode(marker, vtparse.param_count(p), vtparse.param_at(p, 0, 0 - 1),
+               vtparse.param_at(p, 1, 0 - 1), vtparse.param_at(p, 2, 0 - 1),
+               vtparse.intermediate_at(p, 0), final_byte)
 
 // reply_of_params is `reply_of` over a parameter snapshot, for a
 // caller working from `feed`'s drained calls rather than from the
 // parser.
 pub fn reply_of_params(params: vtparse.AnsiParams, final_byte: Int) -> ?AnsiReply
-    todo("ansi-nv.vtquery.reply_of_params")
+    let marker = params.private_marker
+    if is_primary_da(marker, final_byte)
+        Some(AnsiDeviceAttributesReply(vtparse.params_at(params, 0, 0),
+                                       options_of_params(params)))
+    else
+        let intermediate = if list.len(params.intermediates) == 0
+            0
+        else
+            list.get(params.intermediates, 0)
+        decode(marker, vtparse.params_count(params), vtparse.params_at(params, 0, 0 - 1),
+               vtparse.params_at(params, 1, 0 - 1), vtparse.params_at(params, 2, 0 - 1),
+               intermediate, final_byte)
 
 // answers says whether a reply is an answer to a particular query.
 //
@@ -151,7 +267,12 @@ pub fn reply_of_params(params: vtparse.AnsiParams, final_byte: Int) -> ?AnsiRepl
 // and matching on the variant is not enough: two DECRQMs for different
 // modes come back as two `AnsiModeReply`s that differ only in a field.
 pub fn answers(q: AnsiQuery, r: AnsiReply) -> Bool
-    todo("ansi-nv.vtquery.answers")
+    match q
+        AnsiModeQuery(mode) =>
+            match r
+                AnsiModeReply(n, _) => seqwrite.mode_number(mode) == n
+                _                   => false
+        _                   => query_kind(q) == reply_kind(r)
 
 // write_reply appends the answer a TERMINAL would send.
 //
@@ -160,4 +281,15 @@ pub fn answers(q: AnsiQuery, r: AnsiReply) -> Bool
 // parser has to answer the queries its child asks, and a test that
 // feeds a program a synthetic terminal has to produce them.
 pub fn write_reply(out: [u8], r: AnsiReply) -> [u8]
-    todo("ansi-nv.vtquery.write_reply")
+    match r
+        AnsiCursorPositionReply(row, col)                  =>
+            seqwrite.csi(out, 0, [row, col], [], 0x52)
+        AnsiDeviceOkReply                                  => seqwrite.csi(out, 0, [0], [], 0x6E)
+        AnsiDeviceAttributesReply(class, options)          =>
+            seqwrite.csi(out, 0x3F, list.append([class], options), [], 0x63)
+        AnsiSecondaryAttributesReply(kind, version, patch) =>
+            seqwrite.csi(out, 0x3E, [kind, version, patch], [], 0x63)
+        AnsiTextAreaSizeReply(rows, cols)                  =>
+            seqwrite.csi(out, 0, [8, rows, cols], [], 0x74)
+        AnsiModeReply(mode, setting)                       =>
+            seqwrite.csi(out, 0x3F, [mode, setting_number(setting)], [0x24], 0x79)

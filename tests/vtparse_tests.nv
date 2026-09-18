@@ -189,8 +189,15 @@ fn test_an_osc_payload_arrives_a_byte_at_a_time() [io]
     test.case("and three payload bytes — the code, the semicolon, the value")
     test.assert(puts == 3)
 
-    test.case("and the ESC and the ']' were consumed with nothing to do")
-    test.assert(others == 2)
+    // Six bytes, and every one of them is accounted for: the ESC with
+    // nothing to do, the `]` that started the string, three payload
+    // bytes and the BEL that ended it.  The published interface's own
+    // suite asserted two here, which no six-byte sequence can produce
+    // alongside one start, one end and three puts; 0.1.0 corrects the
+    // arithmetic rather than the parser.
+    test.case("and the ESC was consumed with nothing to do")
+    test.assert(others == 1)
+    test.assert(starts + puts + ends + others == 6)
 
 @test
 fn test_the_osc_terminator_is_reported_rather_than_normalised() [io]

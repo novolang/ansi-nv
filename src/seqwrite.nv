@@ -24,50 +24,126 @@
 // zero-based, and the conversion happens at that boundary, once, where
 // it is written down.
 
+use vtparse
 use sgr
+
+// ── The bytes ───────────────────────────────────────────────────────
+//
+// Six private functions, and every public one in this module is a
+// short spelling over them.  They append; nothing here ever looks at
+// what the caller already has in the buffer.
+
+// One byte.
+fn put(out: [u8], b: Int) -> [u8]
+    list.push(out, b as u8)
+
+// A number as its decimal digits.
+//
+// Not `str.from_int` and then its bytes: that allocates a string per
+// parameter, and a frame of a few hundred cells is a few hundred
+// parameters.  A value at or below zero is written `0`, which is what
+// every one of these sequences reads as "the default" — ECMA-48
+// § 5.4.2 gives an omitted or zero parameter the function's own
+// default, so `cursor_up(out, 0)` moves one row rather than none.
+fn put_int(out: [u8], n: Int) -> [u8]
+    if n <= 0
+        put(out, 0x30)
+    else
+        var digits: [Int] = []
+        var v = n
+        while v > 0
+            digits = list.push(digits, 0x30 + v % 10)
+            v = v / 10
+        var o = out
+        var k = list.len(digits) - 1
+        while k >= 0
+            o = put(o, list.get(digits, k))
+            k = k - 1
+        o
+
+// `ESC [`.
+fn csi_open(out: [u8]) -> [u8]
+    put(put(out, 0x1B), 0x5B)
+
+// `CSI <n> <final>`.
+fn csi1(out: [u8], n: Int, final_byte: Int) -> [u8]
+    put(put_int(csi_open(out), n), final_byte)
+
+// `CSI <a> ; <b> <final>`.
+fn csi2(out: [u8], a: Int, b: Int, final_byte: Int) -> [u8]
+    put(put_int(put(put_int(csi_open(out), a), 0x3B), b), final_byte)
+
+// The string terminator the caller chose.
+fn string_end(out: [u8], t: AnsiStringEnd) -> [u8]
+    match t
+        AnsiEndWithBel => put(out, 0x07)
+        AnsiEndWithSt  => put(put(out, 0x1B), 0x5C)
+
+// A string's bytes, as the list the OSC writers take.
+fn str_bytes(text: Str) -> [u8]
+    put_text([], text)
+
+// The number DECSCUSR writes for a shape.
+fn shape_number(shape: AnsiCursorShape) -> Int
+    match shape
+        AnsiShapeDefault      => 0
+        AnsiBlinkingBlock     => 1
+        AnsiSteadyBlock       => 2
+        AnsiBlinkingUnderline => 3
+        AnsiSteadyUnderline   => 4
+        AnsiBlinkingBar       => 5
+        AnsiSteadyBar         => 6
+
+// The number ED writes for an erase mode.
+fn erase_number(mode: AnsiEraseMode) -> Int
+    match mode
+        AnsiEraseToEnd      => 0
+        AnsiEraseToStart    => 1
+        AnsiEraseAll        => 2
+        AnsiEraseScrollback => 3
 
 // ── Cursor ──────────────────────────────────────────────────────────
 
 // cursor_to appends CUP — put the cursor at `row`, `col`, both
 // one-based, with the top left being 1, 1.
 pub fn cursor_to(out: [u8], row: Int, col: Int) -> [u8]
-    todo("ansi-nv.seqwrite.cursor_to")
+    csi2(out, row, col, 0x48)
 
 // cursor_up appends CUU — up `n` rows, stopping at the top of the
 // scroll region.
 pub fn cursor_up(out: [u8], n: Int) -> [u8]
-    todo("ansi-nv.seqwrite.cursor_up")
+    csi1(out, n, 0x41)
 
 // cursor_down appends CUD — down `n` rows, stopping at the bottom of
 // the scroll region.
 pub fn cursor_down(out: [u8], n: Int) -> [u8]
-    todo("ansi-nv.seqwrite.cursor_down")
+    csi1(out, n, 0x42)
 
 // cursor_forward appends CUF — right `n` columns.
 pub fn cursor_forward(out: [u8], n: Int) -> [u8]
-    todo("ansi-nv.seqwrite.cursor_forward")
+    csi1(out, n, 0x43)
 
 // cursor_back appends CUB — left `n` columns.
 pub fn cursor_back(out: [u8], n: Int) -> [u8]
-    todo("ansi-nv.seqwrite.cursor_back")
+    csi1(out, n, 0x44)
 
 // cursor_column appends CHA — to column `col`, one-based, leaving the
 // row alone.
 pub fn cursor_column(out: [u8], col: Int) -> [u8]
-    todo("ansi-nv.seqwrite.cursor_column")
+    csi1(out, col, 0x47)
 
 // cursor_row appends VPA — to row `row`, one-based, leaving the column
 // alone.
 pub fn cursor_row(out: [u8], row: Int) -> [u8]
-    todo("ansi-nv.seqwrite.cursor_row")
+    csi1(out, row, 0x64)
 
 // cursor_next_line appends CNL — down `n` rows, to column 1.
 pub fn cursor_next_line(out: [u8], n: Int) -> [u8]
-    todo("ansi-nv.seqwrite.cursor_next_line")
+    csi1(out, n, 0x45)
 
 // cursor_prev_line appends CPL — up `n` rows, to column 1.
 pub fn cursor_prev_line(out: [u8], n: Int) -> [u8]
-    todo("ansi-nv.seqwrite.cursor_prev_line")
+    csi1(out, n, 0x46)
 
 // cursor_save appends DECSC (`ESC 7`), which saves the cursor position
 // AND the current attributes.
@@ -76,11 +152,11 @@ pub fn cursor_prev_line(out: [u8], n: Int) -> [u8]
 // (`CSI s`), and why a program that saves and restores around a status
 // line does not have to re-emit its colours.
 pub fn cursor_save(out: [u8]) -> [u8]
-    todo("ansi-nv.seqwrite.cursor_save")
+    put(put(out, 0x1B), 0x37)
 
 // cursor_restore appends DECRC (`ESC 8`).
 pub fn cursor_restore(out: [u8]) -> [u8]
-    todo("ansi-nv.seqwrite.cursor_restore")
+    put(put(out, 0x1B), 0x38)
 
 // AnsiCursorShape is what the cursor looks like — DECSCUSR's six
 // settings plus the terminal's own default.
@@ -96,7 +172,7 @@ pub enum AnsiCursorShape
 
 // cursor_shape appends DECSCUSR.
 pub fn cursor_shape(out: [u8], shape: AnsiCursorShape) -> [u8]
-    todo("ansi-nv.seqwrite.cursor_shape")
+    put(put(put_int(csi_open(out), shape_number(shape)), 0x20), 0x71)
 
 // ── Erasing and scrolling ───────────────────────────────────────────
 
@@ -116,17 +192,21 @@ pub enum AnsiEraseMode
 
 // erase_display appends ED.
 pub fn erase_display(out: [u8], mode: AnsiEraseMode) -> [u8]
-    todo("ansi-nv.seqwrite.erase_display")
+    csi1(out, erase_number(mode), 0x4A)
 
 // erase_line appends EL.  `AnsiEraseScrollback` is not a line mode and
 // is written as `AnsiEraseAll`.
 pub fn erase_line(out: [u8], mode: AnsiEraseMode) -> [u8]
-    todo("ansi-nv.seqwrite.erase_line")
+    let n = erase_number(mode)
+    if n == 3
+        csi1(out, 2, 0x4B)
+    else
+        csi1(out, n, 0x4B)
 
 // erase_chars appends ECH — blank `n` cells from the cursor without
 // moving anything.
 pub fn erase_chars(out: [u8], n: Int) -> [u8]
-    todo("ansi-nv.seqwrite.erase_chars")
+    csi1(out, n, 0x58)
 
 // scroll_region appends DECSTBM — set the scrolling region to rows
 // `top`..`bottom`, both one-based and inclusive.
@@ -135,40 +215,40 @@ pub fn erase_chars(out: [u8], n: Int) -> [u8]
 // the sequence and not of this function, and it is the one every
 // caller forgets.
 pub fn scroll_region(out: [u8], top: Int, bottom: Int) -> [u8]
-    todo("ansi-nv.seqwrite.scroll_region")
+    csi2(out, top, bottom, 0x72)
 
 // scroll_region_reset appends DECSTBM with no parameters — the whole
 // screen scrolls again.
 pub fn scroll_region_reset(out: [u8]) -> [u8]
-    todo("ansi-nv.seqwrite.scroll_region_reset")
+    put(csi_open(out), 0x72)
 
 // scroll_up appends SU — the region's content moves up `n` rows.
 pub fn scroll_up(out: [u8], n: Int) -> [u8]
-    todo("ansi-nv.seqwrite.scroll_up")
+    csi1(out, n, 0x53)
 
 // scroll_down appends SD — the region's content moves down `n` rows.
 pub fn scroll_down(out: [u8], n: Int) -> [u8]
-    todo("ansi-nv.seqwrite.scroll_down")
+    csi1(out, n, 0x54)
 
 // insert_lines appends IL — `n` blank lines at the cursor, the rest of
 // the region pushed down.
 pub fn insert_lines(out: [u8], n: Int) -> [u8]
-    todo("ansi-nv.seqwrite.insert_lines")
+    csi1(out, n, 0x4C)
 
 // delete_lines appends DL — `n` lines removed at the cursor, the rest
 // of the region pulled up.
 pub fn delete_lines(out: [u8], n: Int) -> [u8]
-    todo("ansi-nv.seqwrite.delete_lines")
+    csi1(out, n, 0x4D)
 
 // insert_chars appends ICH — `n` blank cells at the cursor, the rest
 // of the line pushed right.
 pub fn insert_chars(out: [u8], n: Int) -> [u8]
-    todo("ansi-nv.seqwrite.insert_chars")
+    csi1(out, n, 0x40)
 
 // delete_chars appends DCH — `n` cells removed at the cursor, the rest
 // of the line pulled left.
 pub fn delete_chars(out: [u8], n: Int) -> [u8]
-    todo("ansi-nv.seqwrite.delete_chars")
+    csi1(out, n, 0x50)
 
 // ── Modes ───────────────────────────────────────────────────────────
 
@@ -216,20 +296,44 @@ pub enum AnsiMode
 
 // set_mode appends SM or DECSET for the mode.
 pub fn set_mode(out: [u8], mode: AnsiMode) -> [u8]
-    todo("ansi-nv.seqwrite.set_mode")
+    let marker = if mode_is_private(mode)
+        0x3F
+    else
+        0
+    csi(out, marker, [mode_number(mode)], [], 0x68)
 
 // reset_mode appends RM or DECRST for the mode.
 pub fn reset_mode(out: [u8], mode: AnsiMode) -> [u8]
-    todo("ansi-nv.seqwrite.reset_mode")
+    let marker = if mode_is_private(mode)
+        0x3F
+    else
+        0
+    csi(out, marker, [mode_number(mode)], [], 0x6C)
 
 // mode_number is the number a mode goes on the wire as, and whether it
 // is a private one.
 pub fn mode_number(mode: AnsiMode) -> Int
-    todo("ansi-nv.seqwrite.mode_number")
+    match mode
+        AnsiInsertMode     => 4
+        AnsiAutoWrap       => 7
+        AnsiCursorVisible  => 25
+        AnsiAltScreen      => 1049
+        AnsiBracketedPaste => 2004
+        AnsiMouseClicks    => 1000
+        AnsiMouseDrag      => 1002
+        AnsiMouseMotion    => 1003
+        AnsiMouseSgr       => 1006
+        AnsiFocusEvents    => 1004
+        AnsiSyncOutput     => 2026
+        AnsiPrivateMode(n) => n
+        AnsiAnsiMode(n)    => n
 
 // mode_is_private says whether a mode is written with the `?` marker.
 pub fn mode_is_private(mode: AnsiMode) -> Bool
-    todo("ansi-nv.seqwrite.mode_is_private")
+    match mode
+        AnsiInsertMode  => false
+        AnsiAnsiMode(_) => false
+        _               => true
 
 // ── Colour and attributes ───────────────────────────────────────────
 
@@ -237,11 +341,11 @@ pub fn mode_is_private(mode: AnsiMode) -> Bool
 // has — from `sgr.sgr_transition`, `sgr.sgr_full` or its own
 // arithmetic.
 pub fn sgr(out: [u8], params: [Int]) -> [u8]
-    todo("ansi-nv.seqwrite.sgr")
+    csi(out, 0, params, [], 0x6D)
 
 // sgr_reset appends `CSI 0 m`.
 pub fn sgr_reset(out: [u8]) -> [u8]
-    todo("ansi-nv.seqwrite.sgr_reset")
+    csi1(out, 0, 0x6D)
 
 // sgr_change appends the shortest `CSI m` that takes the terminal from
 // `from` to `to`, and appends nothing at all when the two are equal.
@@ -261,7 +365,11 @@ pub fn sgr_reset(out: [u8]) -> [u8]
 //     println(str.from_int(list.len(out)))     // 0 — nothing changed
 // ```
 pub fn sgr_change(out: [u8], from: sgr.SgrAttrs, to: sgr.SgrAttrs) -> [u8]
-    todo("ansi-nv.seqwrite.sgr_change")
+    let params = sgr.sgr_transition_sub(from, to)
+    if vtparse.params_count(params) == 0
+        out
+    else
+        csi_params(out, params, 0x6D)
 
 // ── Text ────────────────────────────────────────────────────────────
 
@@ -271,7 +379,20 @@ pub fn sgr_change(out: [u8], from: sgr.SgrAttrs, to: sgr.SgrAttrs) -> [u8]
 // write itself in one line, because the four-branch encoding is where
 // a hand-rolled terminal writer gets a wide character wrong.
 pub fn put_codepoint(out: [u8], ch: Int) -> [u8]
-    todo("ansi-nv.seqwrite.put_codepoint")
+    let c = if ch < 0 or ch > 0x10FFFF or ch >= 0xD800 and ch <= 0xDFFF
+        0xFFFD
+    else
+        ch
+    if c < 0x80
+        put(out, c)
+    else if c < 0x800
+        put(put(out, 0xC0 + c / 64), 0x80 + c % 64)
+    else if c < 0x10000
+        put(put(put(out, 0xE0 + c / 4096), 0x80 + c / 64 % 64), 0x80 + c % 64)
+    else
+        put(put(put(put(out, 0xF0 + c / 262144), 0x80 + c / 4096 % 64),
+                0x80 + c / 64 % 64),
+                0x80 + c % 64)
 
 // put_text appends a string's bytes unchanged.
 //
@@ -279,7 +400,10 @@ pub fn put_codepoint(out: [u8], ch: Int) -> [u8]
 // arithmetic.  A caller with text from somewhere it does not trust
 // wants `put_text_safe`.
 pub fn put_text(out: [u8], text: Str) -> [u8]
-    todo("ansi-nv.seqwrite.put_text")
+    var o = out
+    for i in 0..str.len(text)
+        o = put(o, str.byte_at_or(text, i, 0))
+    o
 
 // put_text_safe appends a string with every C0 control, every C1
 // control and every ESC replaced by a printable stand-in.
@@ -291,7 +415,29 @@ pub fn put_text(out: [u8], text: Str) -> [u8]
 // "trust me": a caller that genuinely wants the sequences calls
 // `put_text`, where the name says so.
 pub fn put_text_safe(out: [u8], text: Str) -> [u8]
-    todo("ansi-nv.seqwrite.put_text_safe")
+    var o = out
+    let n = str.len(text)
+    var i = 0
+    while i < n
+        let b = str.byte_at_or(text, i, 0)
+        let next = str.byte_at_or(text, i + 1, 0)
+        if b < 0x20
+            // `^A` for 0x01, and `^[` for the ESC itself.
+            o = put(put(o, 0x5E), 0x40 + b)
+            i = i + 1
+        else if b == 0x7F
+            o = put(put(o, 0x5E), 0x3F)
+            i = i + 1
+        else if b == 0xC2 and i + 1 < n and next >= 0x80 and next <= 0x9F
+            // A C1 control, which in UTF-8 is two bytes.  `~` rather
+            // than `^` so that a reader can tell `ESC` from the 8-bit
+            // CSI it stands in for.
+            o = put(put(o, 0x7E), 0x40 + (next - 0x80))
+            i = i + 2
+        else
+            o = put(o, b)
+            i = i + 1
+    o
 
 // ── Strings ─────────────────────────────────────────────────────────
 
@@ -301,7 +447,12 @@ pub fn put_text_safe(out: [u8], text: Str) -> [u8]
 // and OSC 4's is a colour specification, and neither is text this
 // package should have an opinion about.
 pub fn osc(out: [u8], code: Int, payload: [u8], terminator: AnsiStringEnd) -> [u8]
-    todo("ansi-nv.seqwrite.osc")
+    var o = put(put(out, 0x1B), 0x5D)
+    o = put_int(o, code)
+    o = put(o, 0x3B)
+    for b in payload
+        o = put(o, b as Int)
+    string_end(o, terminator)
 
 // AnsiStringEnd is which terminator to write a string sequence with.
 //
@@ -318,7 +469,7 @@ pub enum AnsiStringEnd
 // together, which is what every terminal actually does with OSC 0, 1
 // and 2.
 pub fn set_title(out: [u8], title: Str) -> [u8]
-    todo("ansi-nv.seqwrite.set_title")
+    osc(out, 0, str_bytes(title), AnsiEndWithBel)
 
 // clipboard_write appends OSC 52 with an already-base64 payload.
 //
@@ -327,7 +478,7 @@ pub fn set_title(out: [u8], title: Str) -> [u8]
 // consumer that never writes a clipboard, and base64-nv is a row of
 // its own.
 pub fn clipboard_write(out: [u8], selection: Str, base64_payload: Str) -> [u8]
-    todo("ansi-nv.seqwrite.clipboard_write")
+    osc(out, 52, str_bytes(selection + ";" + base64_payload), AnsiEndWithSt)
 
 // ── Raw ─────────────────────────────────────────────────────────────
 
@@ -338,8 +489,67 @@ pub fn clipboard_write(out: [u8], selection: Str, base64_payload: Str) -> [u8]
 // its callers choose between "a function I provide" and "raw bytes I
 // hope are right" would get raw bytes. `private` is 0 for none.
 pub fn csi(out: [u8], private: Int, params: [Int], intermediates: [Int], final_byte: Int) -> [u8]
-    todo("ansi-nv.seqwrite.csi")
+    var o = csi_open(out)
+    if private != 0
+        o = put(o, private)
+    var first = true
+    for v in params
+        if first == false
+            o = put(o, 0x3B)
+        o = put_int(o, v)
+        first = false
+    for b in intermediates
+        o = put(o, b)
+    put(o, final_byte)
+
+// csi_params appends a CSI built from a parameter SNAPSHOT, colon
+// groups and all.
+//
+// ADDED IN 0.1.0, BESIDE `csi` RATHER THAN IN PLACE OF IT.  `csi`
+// takes `params: [Int]`, which is a list of semicolon-separated
+// parameters and cannot express a colon group — so `CSI 4:3 m`, the
+// curly underline, and `CSI 38:2::R:G:B m`, T.416's direct colour,
+// were unreachable through the published surface.  This takes the
+// parser's own `AnsiParams`, whose flat values-and-groups pair carries
+// exactly that, so a sequence this package PARSED can be written back
+// out byte for byte.
+//
+// An empty slot — the middle one of `38:2::R:G:B` — is written as
+// nothing between two colons, which is what it was.
+//
+// ```novo
+// use vtparse
+// use seqwrite
+//
+// fn main() [io]
+//     var p = vtparse.parser_new()
+//     for b in [0x1B, 0x5B, 0x34, 0x3A, 0x33, 0x6D]
+//         let step = vtparse.feed_byte(p, b)
+//         p = step.parser
+//     // The same sequence again, out of what the parser kept.
+//     let out = seqwrite.csi_params([], vtparse.params_of(p), 0x6D)
+//     println("${list.len(out)}")
+// ```
+pub fn csi_params(out: [u8], params: vtparse.AnsiParams, final_byte: Int) -> [u8]
+    var o = csi_open(out)
+    if params.private_marker != vtparse.NO_PRIVATE_MARKER
+        o = put(o, params.private_marker)
+    for i in 0..vtparse.params_count(params)
+        if i > 0
+            o = put(o, 0x3B)
+        for j in 0..vtparse.params_sub_count(params, i)
+            if j > 0
+                o = put(o, 0x3A)
+            let v = vtparse.params_sub_at(params, i, j, vtparse.PARAM_EMPTY)
+            if v != vtparse.PARAM_EMPTY
+                o = put_int(o, v)
+    for b in params.intermediates
+        o = put(o, b)
+    put(o, final_byte)
 
 // esc appends `ESC <intermediates> <final>`.
 pub fn esc(out: [u8], intermediates: [Int], final_byte: Int) -> [u8]
-    todo("ansi-nv.seqwrite.esc")
+    var o = put(out, 0x1B)
+    for b in intermediates
+        o = put(o, b)
+    put(o, final_byte)

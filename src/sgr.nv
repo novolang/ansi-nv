@@ -114,10 +114,441 @@ pub struct SgrAttrs
     // SGR 53.
     overline: Bool
 
+// ── Building an attribute set ───────────────────────────────────────
+//
+// One setter per field, each returning a FRESH literal.  Assigning a
+// field of a copy would write through to the caller's `SgrAttrs` on
+// this toolchain (novo bug lang/struct-field-assignment-aliases-the-
+// caller, filed 2026-09-18 from this package), and a renderer whose
+// "previous style" quietly became the new one would emit no
+// transitions at all.
+
+fn set_fg(a: SgrAttrs, c: AnsiColor) -> SgrAttrs
+    SgrAttrs { fg: c, bg: a.bg, underline_color: a.underline_color, bold: a.bold,
+               dim: a.dim, italic: a.italic, underline: a.underline, blink: a.blink,
+               inverse: a.inverse, hidden: a.hidden, strike: a.strike,
+               overline: a.overline }
+
+fn set_bg(a: SgrAttrs, c: AnsiColor) -> SgrAttrs
+    SgrAttrs { fg: a.fg, bg: c, underline_color: a.underline_color, bold: a.bold,
+               dim: a.dim, italic: a.italic, underline: a.underline, blink: a.blink,
+               inverse: a.inverse, hidden: a.hidden, strike: a.strike,
+               overline: a.overline }
+
+fn set_underline_color(a: SgrAttrs, c: AnsiColor) -> SgrAttrs
+    SgrAttrs { fg: a.fg, bg: a.bg, underline_color: c, bold: a.bold, dim: a.dim,
+               italic: a.italic, underline: a.underline, blink: a.blink,
+               inverse: a.inverse, hidden: a.hidden, strike: a.strike,
+               overline: a.overline }
+
+fn set_bold(a: SgrAttrs, v: Bool) -> SgrAttrs
+    SgrAttrs { fg: a.fg, bg: a.bg, underline_color: a.underline_color, bold: v,
+               dim: a.dim, italic: a.italic, underline: a.underline, blink: a.blink,
+               inverse: a.inverse, hidden: a.hidden, strike: a.strike,
+               overline: a.overline }
+
+fn set_dim(a: SgrAttrs, v: Bool) -> SgrAttrs
+    SgrAttrs { fg: a.fg, bg: a.bg, underline_color: a.underline_color, bold: a.bold,
+               dim: v, italic: a.italic, underline: a.underline, blink: a.blink,
+               inverse: a.inverse, hidden: a.hidden, strike: a.strike,
+               overline: a.overline }
+
+fn set_italic(a: SgrAttrs, v: Bool) -> SgrAttrs
+    SgrAttrs { fg: a.fg, bg: a.bg, underline_color: a.underline_color, bold: a.bold,
+               dim: a.dim, italic: v, underline: a.underline, blink: a.blink,
+               inverse: a.inverse, hidden: a.hidden, strike: a.strike,
+               overline: a.overline }
+
+fn set_underline(a: SgrAttrs, u: SgrUnderline) -> SgrAttrs
+    SgrAttrs { fg: a.fg, bg: a.bg, underline_color: a.underline_color, bold: a.bold,
+               dim: a.dim, italic: a.italic, underline: u, blink: a.blink,
+               inverse: a.inverse, hidden: a.hidden, strike: a.strike,
+               overline: a.overline }
+
+fn set_blink(a: SgrAttrs, v: Bool) -> SgrAttrs
+    SgrAttrs { fg: a.fg, bg: a.bg, underline_color: a.underline_color, bold: a.bold,
+               dim: a.dim, italic: a.italic, underline: a.underline, blink: v,
+               inverse: a.inverse, hidden: a.hidden, strike: a.strike,
+               overline: a.overline }
+
+fn set_inverse(a: SgrAttrs, v: Bool) -> SgrAttrs
+    SgrAttrs { fg: a.fg, bg: a.bg, underline_color: a.underline_color, bold: a.bold,
+               dim: a.dim, italic: a.italic, underline: a.underline, blink: a.blink,
+               inverse: v, hidden: a.hidden, strike: a.strike, overline: a.overline }
+
+fn set_hidden(a: SgrAttrs, v: Bool) -> SgrAttrs
+    SgrAttrs { fg: a.fg, bg: a.bg, underline_color: a.underline_color, bold: a.bold,
+               dim: a.dim, italic: a.italic, underline: a.underline, blink: a.blink,
+               inverse: a.inverse, hidden: v, strike: a.strike, overline: a.overline }
+
+fn set_strike(a: SgrAttrs, v: Bool) -> SgrAttrs
+    SgrAttrs { fg: a.fg, bg: a.bg, underline_color: a.underline_color, bold: a.bold,
+               dim: a.dim, italic: a.italic, underline: a.underline, blink: a.blink,
+               inverse: a.inverse, hidden: a.hidden, strike: v, overline: a.overline }
+
+fn set_overline(a: SgrAttrs, v: Bool) -> SgrAttrs
+    SgrAttrs { fg: a.fg, bg: a.bg, underline_color: a.underline_color, bold: a.bold,
+               dim: a.dim, italic: a.italic, underline: a.underline, blink: a.blink,
+               inverse: a.inverse, hidden: a.hidden, strike: a.strike, overline: v }
+
+// ── Small arithmetic ────────────────────────────────────────────────
+
+// A channel or an index, held inside 0..255.  A malformed value paints
+// something rather than being refused, which is what novo-vte's parser
+// did and what a terminal does.
+fn clamp_byte(n: Int) -> Int
+    if n < 0
+        0
+    else if n > 255
+        255
+    else
+        n
+
+// The six levels of the 6x6x6 cube: 0, then 95 and up in steps of 40.
+fn cube_level(n: Int) -> Int
+    if n == 0
+        0
+    else
+        55 + n * 40
+
+// The RGB behind a palette index at or above 16, without the optional.
+//
+// `indexed_to_rgb` is this with the range check in front of it, and
+// `nearest_index` and `downgrade` call this directly — so neither of
+// them carries a `None` arm that no argument can reach.
+fn cube_rgb(index: Int) -> SgrRgb
+    if index < 232
+        let i = index - 16
+        SgrRgb { r: cube_level(i / 36), g: cube_level(i / 6 % 6), b: cube_level(i % 6) }
+    else
+        let v = 8 + (index - 232) * 10
+        SgrRgb { r: v, g: v, b: v }
+
+// The nearest of the sixteen a terminal owns, by the classic three
+// bits plus a brightness bit.
+//
+// NOT A PALETTE LOOKUP, and it cannot be one: indices 0..15 are the
+// user's theme and no library knows their RGB (see the note at the top
+// of this file).  What it knows is what the bits MEAN — bit 0 red,
+// bit 1 green, bit 2 blue, bit 3 bright — so the answer is derived
+// from the channel values rather than matched against colours this
+// package would have to invent.
+fn basic_index(r: Int, g: Int, b: Int) -> Int
+    var n = 0
+    if r >= 128
+        n = n + 1
+    if g >= 128
+        n = n + 2
+    if b >= 128
+        n = n + 4
+    if r >= 192 or g >= 192 or b >= 192
+        n = n + 8
+    n
+
+// The style a `4:<n>` sub-parameter names.  An unknown one is a plain
+// underline rather than nothing: a terminal that grows a sixth style
+// should still be underlined by a program that has not heard of it.
+fn underline_of(n: Int) -> SgrUnderline
+    if n == 0
+        SgrNoUnderline
+    else if n == 2
+        SgrDoubleUnderline
+    else if n == 3
+        SgrCurlyUnderline
+    else if n == 4
+        SgrDottedUnderline
+    else if n == 5
+        SgrDashedUnderline
+    else
+        SgrSingleUnderline
+
+// The sub-parameter `4:<n>` a style is written with, and -1 for the
+// two styles that have a parameter of their own.
+fn underline_sub(u: SgrUnderline) -> Int
+    match u
+        SgrNoUnderline     => 0 - 1
+        SgrSingleUnderline => 0 - 1
+        SgrDoubleUnderline => 2
+        SgrCurlyUnderline  => 3
+        SgrDottedUnderline => 4
+        SgrDashedUnderline => 5
+
+// ── Building a parameter list with its colon groups ─────────────────
+//
+// `sgr_transition` and `sgr_full` are published as `[Int]`, which is a
+// list of SEMICOLON-separated parameters and has nowhere to put a
+// colon.  Three of the five underline styles — curly, dotted and
+// dashed — exist only in the colon form (ITU-T T.416 § 13.1.8, as
+// xterm and kitty spell it), so the flat answer cannot carry them.
+//
+// The two functions therefore build an `AnsiParams` — the parser's own
+// flat values-and-groups pair — and the published `[Int]` pair is that
+// FLATTENED: one entry per group, its first value.  A group that was
+// `4:3` flattens to `4`, a plain underline, which is what a terminal
+// without the extension would have drawn anyway.  `sgr_transition_sub`
+// and `sgr_full_sub` are the unflattened answers, added in 0.1.0
+// beside the published pair rather than in place of it, and
+// `seqwrite.csi_params` is what puts one on the wire.
+
+// One parameter with no sub-parameters.
+fn one(values: [Int], groups: [Int], v: Int) -> ([Int], [Int])
+    let g = if list.len(groups) == 0
+        0
+    else
+        list.get(groups, list.len(groups) - 1) + 1
+    (list.push(values, v), list.push(groups, g))
+
+// Every entry of `vs` as its own parameter.
+fn many(values: [Int], groups: [Int], vs: [Int]) -> ([Int], [Int])
+    var acc_v = values
+    var acc_g = groups
+    for v in vs
+        let (nv, ng) = one(acc_v, acc_g, v)
+        acc_v = nv
+        acc_g = ng
+    (acc_v, acc_g)
+
+// One parameter carrying one sub-parameter — `4:3` and its family.
+fn one_sub(values: [Int], groups: [Int], v: Int, sub: Int) -> ([Int], [Int])
+    let (nv, ng) = one(values, groups, v)
+    let g = list.get(ng, list.len(ng) - 1)
+    (list.push(nv, sub), list.push(ng, g))
+
+// The parameters an underline style is written with.
+fn underline_params(values: [Int], groups: [Int], u: SgrUnderline) -> ([Int], [Int])
+    let sub = underline_sub(u)
+    match u
+        SgrNoUnderline     => one(values, groups, 24)
+        SgrSingleUnderline => one(values, groups, 4)
+        _                  => one_sub(values, groups, 4, sub)
+
+// One entry per group: what the published `[Int]` shape can hold.
+fn flatten(ps: vtparse.AnsiParams) -> [Int]
+    var out: [Int] = []
+    for i in 0..vtparse.params_count(ps)
+        out = list.push(out, vtparse.params_at(ps, i, 0))
+    out
+
+// The parameters that build `a` from a terminal in an unknown state.
+fn full_params(a: SgrAttrs) -> vtparse.AnsiParams
+    var v: [Int] = []
+    var g: [Int] = []
+    let (v0, g0) = one(v, g, 0)
+    v = v0
+    g = g0
+    if a.bold
+        let (v1, g1) = one(v, g, 1)
+        v = v1
+        g = g1
+    if a.dim
+        let (v1, g1) = one(v, g, 2)
+        v = v1
+        g = g1
+    if a.italic
+        let (v1, g1) = one(v, g, 3)
+        v = v1
+        g = g1
+    if same_underline(a.underline, SgrNoUnderline) == false
+        let (v1, g1) = underline_params(v, g, a.underline)
+        v = v1
+        g = g1
+    if a.blink
+        let (v1, g1) = one(v, g, 5)
+        v = v1
+        g = g1
+    if a.inverse
+        let (v1, g1) = one(v, g, 7)
+        v = v1
+        g = g1
+    if a.hidden
+        let (v1, g1) = one(v, g, 8)
+        v = v1
+        g = g1
+    if a.strike
+        let (v1, g1) = one(v, g, 9)
+        v = v1
+        g = g1
+    if a.overline
+        let (v1, g1) = one(v, g, 53)
+        v = v1
+        g = g1
+    if is_default_color(a.fg) == false
+        let (v1, g1) = many(v, g, color_params(a.fg, false, false))
+        v = v1
+        g = g1
+    if is_default_color(a.bg) == false
+        let (v1, g1) = many(v, g, color_params(a.bg, true, false))
+        v = v1
+        g = g1
+    if is_default_color(a.underline_color) == false
+        let (v1, g1) = many(v, g, color_params(a.underline_color, false, true))
+        v = v1
+        g = g1
+    AnsiParams { values: v, groups: g, intermediates: [],
+                 private_marker: vtparse.NO_PRIVATE_MARKER }
+
+// The parameters that take a terminal from `from` to `to` one change
+// at a time, with no reset.
+fn step_params(from: SgrAttrs, to: SgrAttrs) -> vtparse.AnsiParams
+    var v: [Int] = []
+    var g: [Int] = []
+    // 22 clears bold AND dim, so a clear of either is one parameter
+    // plus whichever of the two survives it.
+    if from.bold and to.bold == false or from.dim and to.dim == false
+        let (v1, g1) = one(v, g, 22)
+        v = v1
+        g = g1
+        if to.bold
+            let (v2, g2) = one(v, g, 1)
+            v = v2
+            g = g2
+        if to.dim
+            let (v2, g2) = one(v, g, 2)
+            v = v2
+            g = g2
+    else
+        if to.bold and from.bold == false
+            let (v1, g1) = one(v, g, 1)
+            v = v1
+            g = g1
+        if to.dim and from.dim == false
+            let (v1, g1) = one(v, g, 2)
+            v = v1
+            g = g1
+    if to.italic != from.italic
+        let code_it = if to.italic
+            3
+        else
+            23
+        let (v1, g1) = one(v, g, code_it)
+        v = v1
+        g = g1
+    if same_underline(to.underline, from.underline) == false
+        let (v1, g1) = underline_params(v, g, to.underline)
+        v = v1
+        g = g1
+    if to.blink != from.blink
+        let code_bl = if to.blink
+            5
+        else
+            25
+        let (v1, g1) = one(v, g, code_bl)
+        v = v1
+        g = g1
+    if to.inverse != from.inverse
+        let code_iv = if to.inverse
+            7
+        else
+            27
+        let (v1, g1) = one(v, g, code_iv)
+        v = v1
+        g = g1
+    if to.hidden != from.hidden
+        let code_hd = if to.hidden
+            8
+        else
+            28
+        let (v1, g1) = one(v, g, code_hd)
+        v = v1
+        g = g1
+    if to.strike != from.strike
+        let code_st = if to.strike
+            9
+        else
+            29
+        let (v1, g1) = one(v, g, code_st)
+        v = v1
+        g = g1
+    if to.overline != from.overline
+        let code_ov = if to.overline
+            53
+        else
+            55
+        let (v1, g1) = one(v, g, code_ov)
+        v = v1
+        g = g1
+    if same_color(to.fg, from.fg) == false
+        let (v1, g1) = many(v, g, color_params(to.fg, false, false))
+        v = v1
+        g = g1
+    if same_color(to.bg, from.bg) == false
+        let (v1, g1) = many(v, g, color_params(to.bg, true, false))
+        v = v1
+        g = g1
+    if same_color(to.underline_color, from.underline_color) == false
+        let (v1, g1) = many(v, g, color_params(to.underline_color, false, true))
+        v = v1
+        g = g1
+    AnsiParams { values: v, groups: g, intermediates: [],
+                 private_marker: vtparse.NO_PRIVATE_MARKER }
+
+// Whether a colour is the terminal's own.
+fn is_default_color(c: AnsiColor) -> Bool
+    match c
+        AnsiDefaultColor => true
+        _                => false
+
+// Two colours, compared by value.
+fn same_color(a: AnsiColor, b: AnsiColor) -> Bool
+    a == b
+
+// Two underline styles, compared by value.
+fn same_underline(a: SgrUnderline, b: SgrUnderline) -> Bool
+    a == b
+
+// The colour a 38, 48 or 58 sets, put in the right field.
+fn with_role_color(a: SgrAttrs, code: Int, c: AnsiColor) -> SgrAttrs
+    if code == 38
+        set_fg(a, c)
+    else if code == 48
+        set_bg(a, c)
+    else
+        set_underline_color(a, c)
+
+// `38:5:N` / `38:2::R:G:B` — the whole colour inside one parameter.
+fn read_colon_color(params: vtparse.AnsiParams, at: Int) -> ?SgrColorRead
+    let n = vtparse.params_sub_count(params, at)
+    let space = vtparse.params_sub_at(params, at, 1, 0 - 1)
+    if space == 5 and n >= 3
+        Some(SgrColorRead { color: AnsiIndexed(clamp_byte(vtparse.params_sub_at(params, at, 2, 0))),
+                            consumed: 1 })
+    else if space == 2 and n >= 6
+        // T.416's own spelling, with the empty colour-space slot.
+        Some(SgrColorRead { color: AnsiTrueColor(clamp_byte(vtparse.params_sub_at(params, at, 3, 0)),
+                                                 clamp_byte(vtparse.params_sub_at(params, at, 4, 0)),
+                                                 clamp_byte(vtparse.params_sub_at(params, at, 5, 0))),
+                            consumed: 1 })
+    else if space == 2 and n == 5
+        // The shorter colon form terminals also accept.
+        Some(SgrColorRead { color: AnsiTrueColor(clamp_byte(vtparse.params_sub_at(params, at, 2, 0)),
+                                                 clamp_byte(vtparse.params_sub_at(params, at, 3, 0)),
+                                                 clamp_byte(vtparse.params_sub_at(params, at, 4, 0))),
+                            consumed: 1 })
+    else
+        None
+
+// `38;5;N` / `38;2;R;G;B` — the colour spread over several parameters.
+fn read_semi_color(params: vtparse.AnsiParams, at: Int) -> ?SgrColorRead
+    let n = vtparse.params_count(params)
+    let space = vtparse.params_at(params, at + 1, 0 - 1)
+    if space == 5 and at + 2 < n
+        Some(SgrColorRead { color: AnsiIndexed(clamp_byte(vtparse.params_at(params, at + 2, 0))),
+                            consumed: 3 })
+    else if space == 2 and at + 4 < n
+        Some(SgrColorRead { color: AnsiTrueColor(clamp_byte(vtparse.params_at(params, at + 2, 0)),
+                                                 clamp_byte(vtparse.params_at(params, at + 3, 0)),
+                                                 clamp_byte(vtparse.params_at(params, at + 4, 0))),
+                            consumed: 5 })
+    else
+        None
+
 // attrs_default is a cell with the terminal's own colours and no
 // styling — what SGR 0 resets to.
 pub fn attrs_default() -> SgrAttrs
-    todo("ansi-nv.sgr.attrs_default")
+    SgrAttrs { fg: AnsiDefaultColor, bg: AnsiDefaultColor,
+               underline_color: AnsiDefaultColor, bold: false, dim: false, italic: false,
+               underline: SgrNoUnderline, blink: false, inverse: false, hidden: false,
+               strike: false, overline: false }
 
 // attrs_eq says whether two attribute sets would render identically.
 //
@@ -125,7 +556,7 @@ pub fn attrs_default() -> SgrAttrs
 // all, which is the single largest saving in a screen update: most
 // runs of cells share their attributes.
 pub fn attrs_eq(a: SgrAttrs, b: SgrAttrs) -> Bool
-    todo("ansi-nv.sgr.attrs_eq")
+    a == b
 
 // apply_sgr folds a whole `CSI m` parameter list onto an attribute
 // set.
@@ -152,7 +583,28 @@ pub fn attrs_eq(a: SgrAttrs, b: SgrAttrs) -> Bool
 //         println("an empty parameter list is a reset")
 // ```
 pub fn apply_sgr(a: SgrAttrs, params: vtparse.AnsiParams) -> SgrAttrs
-    todo("ansi-nv.sgr.apply_sgr")
+    let n = vtparse.params_count(params)
+    if n == 0
+        attrs_default()
+    else
+        var acc = a
+        var i = 0
+        while i < n
+            let code = vtparse.params_at(params, i, 0)
+            if code == 38 or code == 48 or code == 58
+                match read_extended_color(params, i)
+                    Some(read) =>
+                        acc = with_role_color(acc, code, read.color)
+                        i = i + read.consumed
+                    None       =>
+                        i = i + 1
+            else if code == 4 and vtparse.params_sub_count(params, i) > 1
+                acc = set_underline(acc, underline_of(vtparse.params_sub_at(params, i, 1, 1)))
+                i = i + 1
+            else
+                acc = apply_sgr_one(acc, code)
+                i = i + 1
+        acc
 
 // apply_sgr_one folds one SGR number that takes no arguments onto an
 // attribute set.
@@ -162,7 +614,60 @@ pub fn apply_sgr(a: SgrAttrs, params: vtparse.AnsiParams) -> SgrAttrs
 // consume what follows them — those return the attributes unchanged,
 // and `apply_sgr` is the entry point that handles them.
 pub fn apply_sgr_one(a: SgrAttrs, code: Int) -> SgrAttrs
-    todo("ansi-nv.sgr.apply_sgr_one")
+    if code == 0
+        attrs_default()
+    else if code == 1
+        set_bold(a, true)
+    else if code == 2
+        set_dim(a, true)
+    else if code == 3
+        set_italic(a, true)
+    else if code == 4
+        set_underline(a, SgrSingleUnderline)
+    else if code == 5 or code == 6
+        set_blink(a, true)
+    else if code == 7
+        set_inverse(a, true)
+    else if code == 8
+        set_hidden(a, true)
+    else if code == 9
+        set_strike(a, true)
+    else if code == 21
+        set_underline(a, SgrDoubleUnderline)
+    else if code == 22
+        set_dim(set_bold(a, false), false)
+    else if code == 23
+        set_italic(a, false)
+    else if code == 24
+        set_underline(a, SgrNoUnderline)
+    else if code == 25
+        set_blink(a, false)
+    else if code == 27
+        set_inverse(a, false)
+    else if code == 28
+        set_hidden(a, false)
+    else if code == 29
+        set_strike(a, false)
+    else if code >= 30 and code <= 37
+        set_fg(a, AnsiIndexed(code - 30))
+    else if code == 39
+        set_fg(a, AnsiDefaultColor)
+    else if code >= 40 and code <= 47
+        set_bg(a, AnsiIndexed(code - 40))
+    else if code == 49
+        set_bg(a, AnsiDefaultColor)
+    else if code == 53
+        set_overline(a, true)
+    else if code == 55
+        set_overline(a, false)
+    else if code == 59
+        set_underline_color(a, AnsiDefaultColor)
+    else if code >= 90 and code <= 97
+        set_fg(a, AnsiIndexed(code - 90 + 8))
+    else if code >= 100 and code <= 107
+        set_bg(a, AnsiIndexed(code - 100 + 8))
+    else
+        a
 
 // SgrColorRead is a colour read out of a parameter list, and how many
 // parameters it took.
@@ -186,7 +691,13 @@ pub struct SgrColorRead
 // colon form ITU-T T.416 defines, including the empty colour-space
 // slot in `38:2::R:G:B`.
 pub fn read_extended_color(params: vtparse.AnsiParams, at: Int) -> ?SgrColorRead
-    todo("ansi-nv.sgr.read_extended_color")
+    let code = vtparse.params_at(params, at, 0)
+    if code != 38 and code != 48 and code != 58
+        None
+    else if vtparse.params_sub_count(params, at) > 1
+        read_colon_color(params, at)
+    else
+        read_semi_color(params, at)
 
 // sgr_transition is the shortest parameter list that takes a terminal
 // from one attribute set to another.
@@ -201,7 +712,7 @@ pub fn read_extended_color(params: vtparse.AnsiParams, at: Int) -> ?SgrColorRead
 // the wire, and a caller that is building its own sequence may want
 // the numbers.
 pub fn sgr_transition(from: SgrAttrs, to: SgrAttrs) -> [Int]
-    todo("ansi-nv.sgr.sgr_transition")
+    flatten(sgr_transition_sub(from, to))
 
 // sgr_full is the parameter list that produces an attribute set from
 // scratch, beginning with the 0 that resets.
@@ -209,7 +720,46 @@ pub fn sgr_transition(from: SgrAttrs, to: SgrAttrs) -> [Int]
 // What a renderer emits at the start of a line it is redrawing whole,
 // where the terminal's current attributes are unknown.
 pub fn sgr_full(a: SgrAttrs) -> [Int]
-    todo("ansi-nv.sgr.sgr_full")
+    flatten(sgr_full_sub(a))
+
+// sgr_transition_sub is `sgr_transition` with the colon groups intact.
+//
+// ADDED IN 0.1.0, BESIDE THE PUBLISHED `sgr_transition` RATHER THAN IN
+// PLACE OF IT.  `[Int]` is a list of semicolon-separated parameters,
+// and three of the five underline styles — curly, dotted and dashed —
+// have no spelling without a colon (ITU-T T.416 § 13.1.8), so the
+// published shape cannot express them.  This answers the parser's own
+// `AnsiParams`, whose flat values-and-groups pair can, and
+// `seqwrite.csi_params` writes it.  `sgr_transition` is this
+// flattened: one entry per group, so a `4:3` becomes a plain `4`.
+//
+// ```novo
+// use sgr
+// use seqwrite
+//
+// fn main() [io]
+//     let plain = sgr.attrs_default()
+//     let curly = sgr.apply_sgr_one(plain, 4)
+//     let out = seqwrite.csi_params([], sgr.sgr_transition_sub(plain, curly), 0x6D)
+//     println("${list.len(out)}")
+// ```
+pub fn sgr_transition_sub(from: SgrAttrs, to: SgrAttrs) -> vtparse.AnsiParams
+    if attrs_eq(from, to)
+        vtparse.params_empty()
+    else
+        let stepwise = step_params(from, to)
+        let whole = full_params(to)
+        if vtparse.params_count(stepwise) <= vtparse.params_count(whole)
+            stepwise
+        else
+            whole
+
+// sgr_full_sub is `sgr_full` with the colon groups intact.
+//
+// The same 0.1.0 addition as `sgr_transition_sub`, for the same
+// reason, and `sgr_full` is this flattened.
+pub fn sgr_full_sub(a: SgrAttrs) -> vtparse.AnsiParams
+    full_params(a)
 
 // color_params is the parameters one colour serialises to, in the
 // given role.
@@ -218,7 +768,36 @@ pub fn sgr_full(a: SgrAttrs) -> [Int]
 // colour has a family of its own (58/59) — three roles, one function,
 // because the three differ by a constant.
 pub fn color_params(c: AnsiColor, is_background: Bool, is_underline: Bool) -> [Int]
-    todo("ansi-nv.sgr.color_params")
+    let extended = if is_underline
+        58
+    else if is_background
+        48
+    else
+        38
+    match c
+        AnsiDefaultColor       =>
+            if is_underline
+                [59]
+            else if is_background
+                [49]
+            else
+                [39]
+        AnsiIndexed(index)     =>
+            let i = clamp_byte(index)
+            if is_underline == false and i < 8
+                if is_background
+                    [40 + i]
+                else
+                    [30 + i]
+            else if is_underline == false and i < 16
+                if is_background
+                    [100 + i - 8]
+                else
+                    [90 + i - 8]
+            else
+                [extended, 5, i]
+        AnsiTrueColor(r, g, b) =>
+            [extended, 2, clamp_byte(r), clamp_byte(g), clamp_byte(b)]
 
 // indexed_to_rgb is the RGB a palette index above 15 stands for.
 //
@@ -230,7 +809,10 @@ pub fn color_params(c: AnsiColor, is_background: Bool, is_underline: Bool) -> [I
 // this function can exist and the reason the low sixteen are not part
 // of it.
 pub fn indexed_to_rgb(index: Int) -> ?SgrRgb
-    todo("ansi-nv.sgr.indexed_to_rgb")
+    if index < 16 or index > 255
+        None
+    else
+        Some(cube_rgb(index))
 
 // nearest_index is the palette index above 15 that is closest to an
 // RGB value.
@@ -241,7 +823,18 @@ pub fn indexed_to_rgb(index: Int) -> ?SgrRgb
 // what makes a downgraded colour look like the colour rather than like
 // a neighbour.
 pub fn nearest_index(c: SgrRgb) -> Int
-    todo("ansi-nv.sgr.nearest_index")
+    var best = 16
+    var best_d = 0 - 1
+    for i in 16..256
+        let v = cube_rgb(i)
+        let dr = v.r - c.r
+        let dg = v.g - c.g
+        let db = v.b - c.b
+        let d = dr * dr + dg * dg + db * db
+        if best_d < 0 or d < best_d
+            best = i
+            best_d = d
+    best
 
 // downgrade reduces a colour to what a terminal of the given depth can
 // show.
@@ -252,7 +845,24 @@ pub fn nearest_index(c: SgrRgb) -> Int
 // Which depth is available is a `host` question — the environment —
 // and the answer arrives here as an argument.
 pub fn downgrade(c: AnsiColor, depth: SgrDepth) -> AnsiColor
-    todo("ansi-nv.sgr.downgrade")
+    match depth
+        SgrNoColor   => AnsiDefaultColor
+        SgrDepth16   =>
+            match c
+                AnsiDefaultColor       => c
+                AnsiIndexed(index)     =>
+                    if index < 16
+                        c
+                    else
+                        let v = cube_rgb(clamp_byte(index))
+                        AnsiIndexed(basic_index(v.r, v.g, v.b))
+                AnsiTrueColor(r, g, b) => AnsiIndexed(basic_index(r, g, b))
+        SgrDepth256  =>
+            match c
+                AnsiTrueColor(r, g, b) =>
+                    AnsiIndexed(nearest_index(SgrRgb { r: r, g: g, b: b }))
+                _                      => c
+        SgrDepthTrue => c
 
 // SgrDepth is how many colours the terminal on the other end can
 // actually show.

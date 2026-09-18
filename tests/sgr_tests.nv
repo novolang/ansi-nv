@@ -67,10 +67,28 @@ fn test_bold_and_dim_are_separate_flags() [io]
     test.assert(cleared.bold == false)
     test.assert(cleared.dim == false)
 
+// The parameters of a `CSI <text> m`, as the parser collected them.
+//
+// The suite the interface shipped with built this from
+// `params_of(parser_new())`, which is a snapshot of a parser that has
+// never been fed and therefore holds no parameters at all — so the
+// case asserted nothing it claimed to.  0.1.0 feeds the sequence.
+fn params_of_csi(text: Str) -> vtparse.AnsiParams
+    var p = vtparse.parser_new()
+    var last = vtparse.feed_byte(p, 0x1B)
+    p = last.parser
+    last = vtparse.feed_byte(p, 0x5B)
+    p = last.parser
+    for i in 0..str.len(text)
+        last = vtparse.feed_byte(p, str.byte_at_or(text, i, 0))
+        p = last.parser
+    last = vtparse.feed_byte(p, 0x6D)
+    vtparse.params_of(last.parser)
+
 @test
 fn test_an_extended_colour_reports_what_it_consumed() [io]
     // `38;2;10;20;30` — the semicolon form: five parameters.
-    let semi = vtparse.params_of(vtparse.parser_new())
+    let semi = params_of_csi("38;2;10;20;30")
     match sgr.read_extended_color(semi, 0)
         Some(read) =>
             test.case("the semicolon form takes five parameters")
@@ -199,8 +217,8 @@ fn test_a_query_and_its_answer_are_two_halves() [io]
     test.assert(list.len(q) > 0)
 
     test.case("a reply round-trips through the writer")
-    let bytes = vtquery.write_reply([], AnsiCursorPositionReply(12, 40))
-    test.assert(list.len(bytes) > 0)
+    let reply = vtquery.write_reply([], AnsiCursorPositionReply(12, 40))
+    test.assert(list.len(reply) > 0)
 
 @test
 fn test_a_reply_is_recognised_off_an_ordinary_dispatch() [io]
