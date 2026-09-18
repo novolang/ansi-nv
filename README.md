@@ -13,11 +13,14 @@ Three packages on the registry are built on it:
 [clipboard-nv](https://novo-lang.org/packages/clipboard-nv) and
 [tui-nv](https://novo-lang.org/packages/tui-nv).
 
-**Status: NOT IMPLEMENTED — interface only.** Every function is declared
-with its full signature, but every body is a `todo()` that panics when
-called. The package is published so its design can be reviewed and
-depended on before it is implemented. Version 0.1.0 will be the first
-working release.
+**Status: implemented, and new.** Every function has a body and the
+suites are green. The parser is the one
+[novo-vte](https://novo-lang.org/packages/novo-vte) has read terminal
+output with since 2026: the same state machine, moved out from under
+its grid of cells and given the writing half it did not have. novo-vte
+will depend on this package rather than carry its own copy. The API is
+marked experimental because it was designed before it was implemented
+and no program outside this package has used it yet.
 
 ## What it is
 
@@ -112,13 +115,13 @@ fn main() [io]
     // The attributes a terminal starts in: its own colours, no styling.
     let plain = sgr.attrs_default()
     // The same, with bold on and the foreground set to colour 1, red.
-    var red = plain
-    red.bold = true
-    red.fg = AnsiIndexed(1)
+    // SGR 1 is bold and SGR 31 is red, so folding the two on is the
+    // same thing a terminal does when it reads `ESC [ 1 ; 31 m`.
+    let red = sgr.apply_sgr_one(sgr.apply_sgr_one(plain, 1), 31)
 
     // Build the sequences into one buffer, starting from an empty list.
     var out = seqwrite.cursor_to([], 2, 1)
-    // The shortest parameter list that gets from `plain` to `red`.
+    // The shortest sequence that gets from `plain` to `red`.
     out = seqwrite.sgr_change(out, plain, red)
     out = seqwrite.put_text(out, "alert")
     // And back, so the text after this run is unstyled.
@@ -126,10 +129,7 @@ fn main() [io]
     // `out` is bytes. Writing them is the program's job.
 ```
 
-Build and test with `novo pkg build` and `novo test`. Today `novo test`
-fails on purpose: every test reaches a
-`not implemented: ansi-nv.<module>.<fn>` panic. The tests are the
-specification the implementation will have to satisfy.
+Build and test with `novo pkg build` and `novo test`.
 
 ## What the package contains
 
@@ -137,7 +137,7 @@ specification the implementation will have to satisfy.
 | --- | --- |
 | `vtparse` | The state machine: the parser value, the twelve states it rests in, the action returned for one byte, the caller-set limits, and the readers for the parameters, the sub-parameters, the intermediates and the private marker. |
 | `sgr` | The attribute model: one struct holding everything SGR can say about a character, the colour type covering all three forms, the fold of a parameter list onto a set of attributes, and the inverse. |
-| `seqwrite` | The writer: cursor movement, erasing, scrolling, insertion and deletion, the named terminal modes, text, OSC strings, and two escape hatches for sequences this module does not name. Every function appends to a caller's buffer and returns it. |
+| `seqwrite` | The writer: cursor movement, erasing, scrolling, insertion and deletion, the named terminal modes, text, OSC strings, and three escape hatches for sequences this module does not name. Every function appends to a caller's buffer and returns it. |
 | `vtquery` | The questions a program can ask a terminal and the answers, as two halves: one builds the question, the other reads a reply out of an ordinary control sequence dispatch. |
 
 ## How to choose an entry point
@@ -158,6 +158,12 @@ the sequence takes and get the spelling right.
 **`seqwrite.csi` and `seqwrite.esc` write the ones with no name.** The
 DEC private space is open-ended. These two take the private marker, the
 parameters, the intermediates and the final byte directly.
+
+**`seqwrite.csi_params` writes a sequence that has colon groups in it.**
+`csi` takes the parameters as a list of numbers separated by semicolons,
+which has nowhere to put a colon. `csi_params` takes the parser's own
+`AnsiParams`, so a sequence this package read can be written back out
+byte for byte. Rule 14 below says which sequences need it.
 
 ## The rules a user needs
 
@@ -224,6 +230,19 @@ parameters, the intermediates and the final byte directly.
 13. **`sgr.indexed_to_rgb` answers `None` for indices below 16.** Colours
     0 to 15 are the user's own theme and no library can know them. The
     values for 16 to 255 are fixed by the specification.
+14. **Three of the five underline styles can only be written with a
+    colon.** `4:3`, `4:4` and `4:5` — curly, dotted and dashed — have no
+    spelling as a plain numbered parameter, so `sgr.sgr_transition` and
+    `sgr.sgr_full`, which answer a list of numbers, write a plain `4`
+    for all three. `sgr.sgr_transition_sub` and `sgr.sgr_full_sub`
+    answer the same thing with the colon groups intact, and
+    `seqwrite.csi_params` puts one on the wire.
+    **`seqwrite.sgr_change` already uses them**, so a renderer that
+    calls it gets the colon form without doing anything.
+15. **A byte at 0x80 or above in ordinary text is UTF-8, not a C1
+    control.** The parser decodes it as the first byte of a codepoint.
+    The 8-bit forms of CSI, OSC and the rest are therefore not
+    recognised; every terminal in use sends the two-byte `ESC [` form.
 
 ## Running on a microcontroller
 
@@ -240,13 +259,20 @@ novo build --target=nrf52-qemu tests/embedded_probe.nv
 That command builds a Cortex-M4 executable today, and the probe names
 `vtparse`, `seqwrite`, `sgr` and `vtquery`.
 
-**What links today is the signatures, not the storage.** Every body is a
-`todo()`, so the probe proves that the types and the effect rows are
-acceptable at this target, and no more. `AnsiParser` keeps its
-parameters, its groups and its intermediates in `[Int]` fields, and
-those have to become fixed-capacity buffers —
-[heapless-nv](https://novo-lang.org/packages/heapless-nv)'s — before any
-of it runs on a device.
+**What links is the code; what does not fit yet is the storage.**
+`AnsiParser` keeps its parameters, its groups and its intermediates in
+`[Int]` fields, which are lists that grow. A list that grows is not what
+a device with no heap allocator wants, and it is also why feeding a byte
+costs two small heap allocations: novo-lang stores a struct with a list
+field on the heap, and `feed_byte` builds two of them, the parser it
+answers and the step that carries it. Reading a byte of ordinary text
+touches no list at all; a control sequence's parameters grow three.
+Those three fields have to become fixed-capacity buffers —
+[heapless-nv](https://novo-lang.org/packages/heapless-nv)'s — before the
+package runs on a device with no allocator, and changing them is a
+change every dependent sees, so it waits for the release that makes it.
+`tests/alloc_probe.nv` and `scripts/alloc_scan.py` are how the numbers
+above are read off the compiled output.
 
 `strict_limits` is the configuration for this case. Its payload ceiling
 is 128 bytes, because an OSC 52 paste from the other end of the link is
@@ -307,6 +333,8 @@ unbounded and a device has nowhere to put it.
 novo test --isolate tests/vtparse_tests.nv   # 18 tests: the state machine
 novo test --isolate tests/sgr_tests.nv       # 15 tests: attributes, writer, queries
 novo test --isolate tests/surface_tests.nv   # 13 tests: every signature, called once
+novo test --isolate tests/corpus_tests.nv    # 36 tests: novo-vte's cases, every state, every limit
+novo test --isolate tests/writer_tests.nv    # 32 tests: the exact bytes of every sequence
 ```
 
 The sequences the suites assert on come from xterm's `ctlseqs` for the
@@ -325,10 +353,23 @@ parameter list reports how many parameters it took. `surface_tests.nv`
 calls every published function once, from outside its own module, with
 the argument types a consumer would pass.
 
-No test opens a descriptor or writes anything. The tests compile today
-and fail at run, each on the `not implemented: ansi-nv.<module>.<fn>`
-panic that is its body. That is the expected state of an interface
-release. They turn green one at a time as bodies land.
+`corpus_tests.nv` is novo-vte's own parser suite, case by case. Those
+tests assert what a grid of cells looked like after a sequence, because
+novo-vte's parser changes a grid as it reads; this package has no grid,
+so each case is asserted at the layer it actually tested — the dispatch
+that came out and the parameters it came with. Beside them the file
+walks every state the parser publishes and produces every refusal from
+the limit it belongs to.
+
+`writer_tests.nv` asserts the exact bytes of every sequence this package
+writes. Where a sequence can also be read, it is fed back through this
+package's own parser and has to come out as what it was.
+
+Every line of `src/` is executed by the suites: 834 of 834, with no
+region excused. `novo test --cov` measures one file at a time, so
+`scripts/coverage.py` merges the per-file reports and prints the total.
+
+No test opens a descriptor or writes anything.
 
 `tests/embedded_probe.nv` is the program that shows this package builds
 for a microcontroller with no heap allocator. It is compiled for the
@@ -337,30 +378,18 @@ microcontroller".
 
 ## Implementation status
 
-| Item | Implemented |
-| --- | --- |
-| `vtparse.PARAM_EMPTY`, `.NO_PRIVATE_MARKER`, `.REPLACEMENT_CHAR` | yes (they are constants) |
-| `vtparse.default_limits`, `.strict_limits`, `.parser_new`, `.parser_with` | no |
-| `vtparse.feed_byte`, `.feed`, `.reset` | no |
-| `vtparse.state_of`, `.is_settled` | no |
-| `vtparse.param_count`, `.param_at`, `.sub_count`, `.sub_at` | no |
-| `vtparse.intermediate_count`, `.intermediate_at`, `.private_marker_of` | no |
-| `vtparse.params_of`, `.params_empty`, `.params_count`, `.params_at`, `.params_sub_count`, `.params_sub_at` | no |
-| `vtparse.osc_code`, `.osc_field` | no |
-| `sgr.attrs_default`, `.attrs_eq` | no |
-| `sgr.apply_sgr`, `.apply_sgr_one`, `.read_extended_color` | no |
-| `sgr.sgr_transition`, `.sgr_full`, `.color_params` | no |
-| `sgr.indexed_to_rgb`, `.nearest_index`, `.downgrade` | no |
-| `seqwrite`'s eleven cursor functions, and `cursor_shape` | no |
-| `seqwrite.erase_display`, `.erase_line`, `.erase_chars` | no |
-| `seqwrite.scroll_region`, `.scroll_region_reset`, `.scroll_up`, `.scroll_down` | no |
-| `seqwrite.insert_lines`, `.delete_lines`, `.insert_chars`, `.delete_chars` | no |
-| `seqwrite.set_mode`, `.reset_mode`, `.mode_number`, `.mode_is_private` | no |
-| `seqwrite.sgr`, `.sgr_reset`, `.sgr_change` | no |
-| `seqwrite.put_codepoint`, `.put_text`, `.put_text_safe` | no |
-| `seqwrite.osc`, `.set_title`, `.clipboard_write` | no |
-| `seqwrite.csi`, `.esc` | no |
-| `vtquery.write_query`, `.reply_of`, `.reply_of_params`, `.answers`, `.write_reply` | no |
+Everything the package declares has a body. The table says what each
+module does and what it deliberately leaves to the caller.
+
+| Module | Implemented | Not implemented, on purpose |
+| --- | --- | --- |
+| `vtparse` | The whole state machine: twelve states, colon sub-parameters, the private marker, UTF-8 in the ground state, OSC and DCS payloads, both string terminators, and a refusal for every limit. | The 8-bit forms of the control characters. See rule 15. |
+| `sgr` | The attribute model, the fold of a parameter list onto it in both the semicolon and the colon spelling, the shortest transition between two sets of attributes, the 240 palette colours the specification fixes, and the reduction to 256 or 16 colours. | The sixteen colours a user's theme owns. See rule 13. |
+| `seqwrite` | Every named sequence, text, OSC strings, and three escape hatches. | Nothing. |
+| `vtquery` | Six queries, six replies, both directions, and the matching of a reply to the query it answers. | The queries whose reply is a free-form string. `seqwrite.csi` is how those are asked. |
+
+Two functions were added in 0.1.0 beside published ones that could not
+express a colon group, and the published ones still work: see rule 14.
 
 ## Licence
 

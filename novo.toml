@@ -1,15 +1,17 @@
 [package]
 name        = "ansi-nv"
-version     = "0.0.2"
-description = "The escape-sequence layer with no terminal under it: the VT/xterm state machine as a byte-at-a-time parser that yields typed actions, the SGR attribute model with all three colour forms, a writer that BUILDS sequences into a caller's buffer instead of printing them, and the query/response pairs a program needs.  Interface only — every body is a todo()."
+version     = "0.1.0"
+description = "The escape-sequence layer with no terminal under it: the VT/xterm state machine as a byte-at-a-time parser that yields typed actions, the SGR attribute model with all three colour forms, a writer that BUILDS sequences into a caller's buffer instead of printing them, and the query/response pairs a program needs."
 license     = "Apache-2.0"
 
-# An INTERFACE release: every `pub fn` body is a `todo()`, so the
-# signatures and the effect rows are published and nothing is
-# implemented.  `novo pkg publish` recognises the shape and requires
-# both the draft stability and the 0.0.x version; the first
-# implementation is the 0.1.0 published over it.
-stability   = "draft"
+# The first release with bodies, published over the 0.0.1 interface.
+# `novo pkg publish` refuses a `0.0.x` once a body is real, so the
+# promotion is the version and this line together.  `experimental`
+# because the API tests were written against the signatures before the
+# bodies existed, and two of them turned out to assert things no
+# implementation could satisfy — see the CHANGELOG.  Nothing outside
+# this package has used the surface yet.
+stability   = "experimental"
 
 # `core`, and the whole design follows from it.  A terminal is the one
 # place a library is most tempted to print, so nothing here does: bytes
@@ -24,7 +26,10 @@ category    = "terminal"
 tags        = ["ansi", "vt100", "xterm", "escape-sequences", "sgr", "csi", "osc", "terminal", "sans-io", "ecma-48"]
 repository  = "https://github.com/novolang/ansi-nv"
 maintainers = ["novo-lang"]
-novo        = ">= 0.8.9"
+# Built, tested and measured on 0.9.1.  The floor is the toolchain the
+# release was actually checked against rather than the oldest one that
+# might work.
+novo        = ">= 0.9.1"
 
 # A library: no `main`, so `novo pkg build` type-checks and
 # effect-checks every module under `src/` and writes no binary.
