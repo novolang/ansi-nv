@@ -1,20 +1,13 @@
 // surface_tests.nv — the rest of the published surface, called once
-// each.
+// each.  Run with `--isolate` for one verdict per `@test`.
 //
-// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
-// assertion here reaches `not implemented: ansi-nv.<module>.<fn>`.  Run
-// with `--isolate` for one verdict per `@test`.
-//
-// WHY THIS FILE EXISTS SEPARATELY.  The two suites beside it assert
-// BEHAVIOUR — a chunk split mid-parameter, an unchanged style costing
-// no bytes.  This one asserts that the surface is callable at all: that
-// every published signature type-checks from outside its own module,
-// with the argument types a consumer would actually pass.  On an
-// interface package that is not a formality, because a signature is
-// the entire product and a name that cannot be called from another
-// module is a name nobody can use — which is a real failure mode on
-// this toolchain and one a suite that only tested the interesting
-// functions would not have found.
+// The suites beside this one assert behaviour, such as a chunk split
+// mid-parameter or an unchanged style costing no bytes.  This one
+// asserts that the surface is callable at all.  Every published
+// signature has to type-check from outside its own module, with the
+// argument types a consumer would pass.  A name that cannot be called
+// from another module is a name nobody can use, and that is a failure
+// a suite testing only the interesting functions would not find.
 
 use std.test
 use std.list

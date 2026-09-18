@@ -1,30 +1,28 @@
-// vtparse_tests.nv — the API suite for the state machine.
+// vtparse_tests.nv — the suite for the state machine.  Run with
+// `--isolate` for one verdict per `@test`.
 //
-// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
-// assertion here reaches `not implemented: ansi-nv.vtparse.<fn>`.  Run
-// with `--isolate` for one verdict per `@test`.
+// These cases are about the chunk boundary.  A parser whose tests only
+// ever feed whole sequences is a parser that will be split in
+// production on the first day, so almost every case below feeds the
+// bytes one at a time and asserts what the machine is holding in
+// between.  The rest fix a limit and assert the refusal.
 //
-// WHAT THESE CASES ARE FOR is the chunk boundary.  A parser whose
-// tests only ever feed whole sequences is a parser that will be split
-// in production on the first day, so almost every case below feeds the
-// bytes one at a time and asserts what the machine is holding
-// in between.  The rest fix a limit and assert the refusal.
-//
-// The row on every `@test` here is `[io]`, for `test.case` and nothing
-// else — which is the check that the parser really is `[]`.
+// The effect row on every `@test` here is `[io]`, which `test.case`
+// needs and nothing else does.  That is the standing check that the
+// parser itself is `[]`.
 
 use std.test
 use std.list
 use vtparse
 
-// The bytes of `ESC [ 2 ; 1 H` — CUP, "row 2, column 1" — written out
-// so that the cases below can feed any prefix of it.
+// The bytes of `ESC [ 2 ; 1 H`, which is CUP for row 2, column 1.  It
+// is written out so that the cases below can feed any prefix of it.
 fn cup_2_1() -> [Int]
     [0x1B, 0x5B, 0x32, 0x3B, 0x31, 0x48]
 
-// Feed a whole list of bytes and hand back the last step, which is the
-// shape almost every case here wants: the action that fired, and the
-// parser it fired with.
+// Feed a whole list of bytes and hand back the last step.  That is the
+// shape almost every case here wants, because it carries the action
+// that fired and the parser it fired with.
 fn run(bytes: [Int]) -> vtparse.AnsiStep
     var p = vtparse.parser_new()
     var last = vtparse.feed_byte(p, 0)
@@ -79,8 +77,9 @@ fn test_a_csi_dispatches_on_its_final_byte() [io]
 
 @test
 fn test_a_chunk_may_split_inside_a_parameter_list() [io]
-    // The load-bearing case: feed the sequence in two halves, keeping
-    // the parser across the break, and assert the same dispatch.
+    // The case the chunk boundary is about.  Feed the sequence in two
+    // halves, keep the parser across the break, and assert the same
+    // dispatch.
     var p = vtparse.parser_new()
     var last = vtparse.feed_byte(p, 0)
     for b in [0x1B, 0x5B, 0x32]
@@ -136,7 +135,7 @@ fn test_the_private_marker_is_kept_apart_from_the_parameters() [io]
 
 @test
 fn test_colon_sub_parameters_stay_in_their_group() [io]
-    // `CSI 4:3 m` — a curly underline.  One parameter, two
+    // `CSI 4:3 m`, a curly underline.  One parameter and two
     // sub-parameters.
     test.case("`4:3` is one parameter")
     let step = run([0x1B, 0x5B, 0x34, 0x3A, 0x33, 0x6D])
@@ -149,8 +148,8 @@ fn test_colon_sub_parameters_stay_in_their_group() [io]
 
 @test
 fn test_an_empty_sub_parameter_slot_survives() [io]
-    // `CSI 38:2::1:2:3 m` — the T.416 spelling, with an empty colour
-    // space slot that a naive split drops.
+    // `CSI 38:2::1:2:3 m`, the T.416 spelling, with an empty
+    // colour-space slot that a naive split drops.
     test.case("the empty middle slot is still a slot")
     let step = run([0x1B, 0x5B, 0x33, 0x38, 0x3A, 0x32, 0x3A, 0x3A,
                     0x31, 0x3A, 0x32, 0x3A, 0x33, 0x6D])
@@ -163,7 +162,7 @@ fn test_an_empty_sub_parameter_slot_survives() [io]
 
 @test
 fn test_an_osc_payload_arrives_a_byte_at_a_time() [io]
-    // `OSC 0 ; A BEL` — set the title to "A".
+    // `OSC 0 ; A BEL`, which sets the title to "A".
     var p = vtparse.parser_new()
     var starts = 0
     var puts = 0
@@ -189,12 +188,10 @@ fn test_an_osc_payload_arrives_a_byte_at_a_time() [io]
     test.case("and three payload bytes — the code, the semicolon, the value")
     test.assert(puts == 3)
 
-    // Six bytes, and every one of them is accounted for: the ESC with
-    // nothing to do, the `]` that started the string, three payload
-    // bytes and the BEL that ended it.  The published interface's own
-    // suite asserted two here, which no six-byte sequence can produce
-    // alongside one start, one end and three puts; 0.1.0 corrects the
-    // arithmetic rather than the parser.
+    // Six bytes, and every one of them is accounted for.  They are the
+    // ESC with nothing to do, the `]` that started the string, three
+    // payload bytes, and the BEL that ended it.  The four figures have
+    // to add up to the number of bytes fed.
     test.case("and the ESC was consumed with nothing to do")
     test.assert(others == 1)
     test.assert(starts + puts + ends + others == 6)
@@ -248,7 +245,7 @@ fn test_an_osc_payload_splits_into_fields() [io]
 
 @test
 fn test_a_multi_byte_codepoint_is_assembled_across_bytes() [io]
-    // U+00E9, LATIN SMALL LETTER E WITH ACUTE — 0xC3 0xA9.
+    // U+00E9, latin small letter e with acute, which is 0xC3 0xA9.
     var p = vtparse.parser_new()
     let first = vtparse.feed_byte(p, 0xC3)
 
@@ -279,7 +276,8 @@ fn test_a_broken_codepoint_is_refused_rather_than_silently_dropped() [io]
 
 @test
 fn test_a_parameter_list_past_the_limit_is_refused() [io]
-    // `strict_limits` keeps 8 parameters; this sequence carries 10.
+    // `strict_limits` keeps 8 parameters, and this sequence carries
+    // 10.
     var p = vtparse.parser_with(vtparse.strict_limits())
     var refused = false
     var steps = 0

@@ -1,37 +1,36 @@
-// seqwrite.nv — the other direction: sequences BUILT into a buffer the
-// caller owns.
+// seqwrite.nv — the other direction, where sequences are built into a
+// buffer the caller owns.
 //
-// Every body here is a `todo()`; the signatures are the design.
+// A library does not print, and a terminal library is where that rule
+// is hardest to keep.  Every function here takes the byte buffer it
+// should append to and returns it.  Nothing opens a file descriptor,
+// nothing consults `isatty`, and nothing decides on the program's
+// behalf that something should appear on a console.  That is why the
+// package is `core`, and it is what lets the same calls build a screen
+// update for a pty, a golden file for a test, a frame for a serial
+// console, and a recording nobody will ever display.
 //
-// A LIBRARY DOES NOT PRINT, and a terminal library is where that rule
-// is hardest to keep and matters most.  Every function here takes the
-// byte buffer it should append to and returns it; nothing opens a file
-// descriptor, nothing consults `isatty`, nothing decides on the
-// program's behalf that something should appear on a console.  The
-// consequence is the whole reason the package is `core`: the same
-// calls build a screen update for a pty, a golden file for a test, a
-// frame for a serial console, and a recording nobody will ever display.
+// The buffer is the caller's.  `out` goes in and `out` comes back.  A
+// caller batches a whole frame into one list and writes it once, which
+// is a correctness property rather than an optimisation.  A screen
+// update split across two writes is a screen update a reader can see
+// tear.
 //
-// THE BUFFER IS THE CALLER'S.  `out` in, `out` out.  A caller batches
-// a whole frame into one list and writes it once — which is not an
-// optimisation but a correctness property, because a screen update
-// split across two writes is a screen update a reader can see tear.
-//
-// THE PARAMETER NAMES ARE ONE-BASED WHERE THE TERMINAL IS.  `cursor_to`
+// The parameters are one-based where the terminal is.  `cursor_to`
 // takes row 1, column 1 for the top left, because that is what CUP
-// means and a library that helpfully subtracted one would be a library
-// every caller adds one back for.  The grid types in tui-nv are
-// zero-based, and the conversion happens at that boundary, once, where
-// it is written down.
+// means, and a library that subtracted one would be a library every
+// caller adds one back for.  The grid types in tui-nv are zero-based,
+// and the conversion happens at that boundary, once, where it is
+// written down.
 
 use vtparse
 use sgr
 
 // ── The bytes ───────────────────────────────────────────────────────
 //
-// Six private functions, and every public one in this module is a
-// short spelling over them.  They append; nothing here ever looks at
-// what the caller already has in the buffer.
+// Six private functions, and every public one in this module is a short
+// spelling over them.  They append, and nothing here ever looks at what
+// the caller already has in the buffer.
 
 // One byte.
 fn put(out: [u8], b: Int) -> [u8]
@@ -39,12 +38,12 @@ fn put(out: [u8], b: Int) -> [u8]
 
 // A number as its decimal digits.
 //
-// Not `str.from_int` and then its bytes: that allocates a string per
+// Not `str.from_int` and then its bytes, which allocates a string per
 // parameter, and a frame of a few hundred cells is a few hundred
-// parameters.  A value at or below zero is written `0`, which is what
-// every one of these sequences reads as "the default" — ECMA-48
-// § 5.4.2 gives an omitted or zero parameter the function's own
-// default, so `cursor_up(out, 0)` moves one row rather than none.
+// parameters.  A value at or below zero is written `0`, which every one
+// of these sequences reads as the default.  ECMA-48 § 5.4.2 gives an
+// omitted or zero parameter the function's own default, so
+// `cursor_up(out, 0)` moves one row rather than none.
 fn put_int(out: [u8], n: Int) -> [u8]
     if n <= 0
         put(out, 0x30)
@@ -104,49 +103,50 @@ fn erase_number(mode: AnsiEraseMode) -> Int
 
 // ── Cursor ──────────────────────────────────────────────────────────
 
-// cursor_to appends CUP — put the cursor at `row`, `col`, both
-// one-based, with the top left being 1, 1.
+// cursor_to appends CUP, which puts the cursor at `row` and `col`.
+// Both are one-based, and the top left is 1, 1.
 pub fn cursor_to(out: [u8], row: Int, col: Int) -> [u8]
     csi2(out, row, col, 0x48)
 
-// cursor_up appends CUU — up `n` rows, stopping at the top of the
-// scroll region.
+// cursor_up appends CUU, which moves up `n` rows and stops at the top
+// of the scroll region.
 pub fn cursor_up(out: [u8], n: Int) -> [u8]
     csi1(out, n, 0x41)
 
-// cursor_down appends CUD — down `n` rows, stopping at the bottom of
-// the scroll region.
+// cursor_down appends CUD, which moves down `n` rows and stops at the
+// bottom of the scroll region.
 pub fn cursor_down(out: [u8], n: Int) -> [u8]
     csi1(out, n, 0x42)
 
-// cursor_forward appends CUF — right `n` columns.
+// cursor_forward appends CUF, which moves right `n` columns.
 pub fn cursor_forward(out: [u8], n: Int) -> [u8]
     csi1(out, n, 0x43)
 
-// cursor_back appends CUB — left `n` columns.
+// cursor_back appends CUB, which moves left `n` columns.
 pub fn cursor_back(out: [u8], n: Int) -> [u8]
     csi1(out, n, 0x44)
 
-// cursor_column appends CHA — to column `col`, one-based, leaving the
-// row alone.
+// cursor_column appends CHA, which moves to column `col` and leaves
+// the row alone.  The column is one-based.
 pub fn cursor_column(out: [u8], col: Int) -> [u8]
     csi1(out, col, 0x47)
 
-// cursor_row appends VPA — to row `row`, one-based, leaving the column
-// alone.
+// cursor_row appends VPA, which moves to row `row` and leaves the
+// column alone.  The row is one-based.
 pub fn cursor_row(out: [u8], row: Int) -> [u8]
     csi1(out, row, 0x64)
 
-// cursor_next_line appends CNL — down `n` rows, to column 1.
+// cursor_next_line appends CNL, which moves down `n` rows to column
+// 1.
 pub fn cursor_next_line(out: [u8], n: Int) -> [u8]
     csi1(out, n, 0x45)
 
-// cursor_prev_line appends CPL — up `n` rows, to column 1.
+// cursor_prev_line appends CPL, which moves up `n` rows to column 1.
 pub fn cursor_prev_line(out: [u8], n: Int) -> [u8]
     csi1(out, n, 0x46)
 
 // cursor_save appends DECSC (`ESC 7`), which saves the cursor position
-// AND the current attributes.
+// and the current attributes together.
 //
 // The attribute half is why this is not interchangeable with SCOSC
 // (`CSI s`), and why a program that saves and restores around a status
@@ -158,10 +158,10 @@ pub fn cursor_save(out: [u8]) -> [u8]
 pub fn cursor_restore(out: [u8]) -> [u8]
     put(put(out, 0x1B), 0x38)
 
-// AnsiCursorShape is what the cursor looks like — DECSCUSR's six
+// AnsiCursorShape is what the cursor looks like.  It is DECSCUSR's six
 // settings plus the terminal's own default.
 pub enum AnsiCursorShape
-    // `CSI 0 q` — whatever the user configured.
+    // `CSI 0 q`, whatever the user configured.
     AnsiShapeDefault
     AnsiBlinkingBlock
     AnsiSteadyBlock
@@ -178,16 +178,17 @@ pub fn cursor_shape(out: [u8], shape: AnsiCursorShape) -> [u8]
 
 // AnsiEraseMode is how much of a line or a display to erase.
 pub enum AnsiEraseMode
-    // From the cursor to the end — mode 0.
+    // From the cursor to the end, which is mode 0.
     AnsiEraseToEnd
-    // From the start to the cursor — mode 1.
+    // From the start to the cursor, which is mode 1.
     AnsiEraseToStart
-    // The whole line, or the whole display — mode 2.
+    // The whole line, or the whole display, which is mode 2.
     AnsiEraseAll
-    // The scrollback — mode 3, ED only.  xterm's extension, and the
-    // one every program that wants a genuinely clean screen needs;
-    // `AnsiEraseAll` leaves the scrollback in place, which is what
-    // makes a `clear` that scrolls the old screen up out of view.
+    // The scrollback, which is mode 3 and ED only.  It is xterm's
+    // extension, and it is what a program that wants a clean screen
+    // needs.  `AnsiEraseAll` leaves the scrollback in place, which is
+    // what makes a `clear` that scrolls the old screen up out of
+    // view.
     AnsiEraseScrollback
 
 // erase_display appends ED.
@@ -203,50 +204,52 @@ pub fn erase_line(out: [u8], mode: AnsiEraseMode) -> [u8]
     else
         csi1(out, n, 0x4B)
 
-// erase_chars appends ECH — blank `n` cells from the cursor without
-// moving anything.
+// erase_chars appends ECH, which blanks `n` cells from the cursor
+// without moving anything.
 pub fn erase_chars(out: [u8], n: Int) -> [u8]
     csi1(out, n, 0x58)
 
-// scroll_region appends DECSTBM — set the scrolling region to rows
-// `top`..`bottom`, both one-based and inclusive.
+// scroll_region appends DECSTBM, which sets the scrolling region to
+// rows `top`..`bottom`.  Both are one-based and inclusive.
 //
-// Setting the region also homes the cursor, which is a side effect of
-// the sequence and not of this function, and it is the one every
-// caller forgets.
+// Setting the region also homes the cursor.  That is an effect of the
+// sequence rather than of this function, and it is the one every caller
+// forgets.
 pub fn scroll_region(out: [u8], top: Int, bottom: Int) -> [u8]
     csi2(out, top, bottom, 0x72)
 
-// scroll_region_reset appends DECSTBM with no parameters — the whole
-// screen scrolls again.
+// scroll_region_reset appends DECSTBM with no parameters, so that the
+// whole screen scrolls again.
 pub fn scroll_region_reset(out: [u8]) -> [u8]
     put(csi_open(out), 0x72)
 
-// scroll_up appends SU — the region's content moves up `n` rows.
+// scroll_up appends SU, which moves the region's content up `n`
+// rows.
 pub fn scroll_up(out: [u8], n: Int) -> [u8]
     csi1(out, n, 0x53)
 
-// scroll_down appends SD — the region's content moves down `n` rows.
+// scroll_down appends SD, which moves the region's content down `n`
+// rows.
 pub fn scroll_down(out: [u8], n: Int) -> [u8]
     csi1(out, n, 0x54)
 
-// insert_lines appends IL — `n` blank lines at the cursor, the rest of
-// the region pushed down.
+// insert_lines appends IL, which puts `n` blank lines at the cursor and
+// pushes the rest of the region down.
 pub fn insert_lines(out: [u8], n: Int) -> [u8]
     csi1(out, n, 0x4C)
 
-// delete_lines appends DL — `n` lines removed at the cursor, the rest
-// of the region pulled up.
+// delete_lines appends DL, which removes `n` lines at the cursor and
+// pulls the rest of the region up.
 pub fn delete_lines(out: [u8], n: Int) -> [u8]
     csi1(out, n, 0x4D)
 
-// insert_chars appends ICH — `n` blank cells at the cursor, the rest
-// of the line pushed right.
+// insert_chars appends ICH, which puts `n` blank cells at the cursor
+// and pushes the rest of the line right.
 pub fn insert_chars(out: [u8], n: Int) -> [u8]
     csi1(out, n, 0x40)
 
-// delete_chars appends DCH — `n` cells removed at the cursor, the rest
-// of the line pulled left.
+// delete_chars appends DCH, which removes `n` cells at the cursor and
+// pulls the rest of the line left.
 pub fn delete_chars(out: [u8], n: Int) -> [u8]
     csi1(out, n, 0x50)
 
@@ -254,39 +257,42 @@ pub fn delete_chars(out: [u8], n: Int) -> [u8]
 
 // AnsiMode is a terminal setting that can be turned on and off.
 //
-// The named variants are the ones a program uses by name; the two
+// The named variants are the ones a program uses by name.  The two
 // numeric ones are the escape hatch, because the DEC private space is
-// open-ended and a library that only knew the ones it had heard of
+// open-ended and a library that knew only the modes it had heard of
 // would be a library every caller writes raw bytes around.
 pub enum AnsiMode
-    // IRM, `CSI 4 h` — insert rather than replace.  An ANSI mode, not
-    // a private one.
+    // IRM, `CSI 4 h`, which inserts rather than replaces.  It is an
+    // ANSI mode rather than a private one.
     AnsiInsertMode
-    // DECAWM, `CSI ? 7 h` — wrap at the right margin.
+    // DECAWM, `CSI ? 7 h`, which wraps at the right margin.
     AnsiAutoWrap
-    // DECTCEM, `CSI ? 25 h` — show the cursor.
+    // DECTCEM, `CSI ? 25 h`, which shows the cursor.
     AnsiCursorVisible
-    // `CSI ? 1049 h` — the alternate screen, saving the cursor and
-    // clearing on the way in.  The two older spellings, 47 and 1047,
-    // do not save the cursor; a program that means "full screen"
-    // means this one.
+    // `CSI ? 1049 h`, the alternate screen.  It saves the cursor and
+    // clears on the way in.  The two older spellings, 47 and 1047, do
+    // not save the cursor, so a program that means full screen means
+    // this one.
     AnsiAltScreen
-    // `CSI ? 2004 h` — bracketed paste: pasted text arrives wrapped in
+    // `CSI ? 2004 h`, bracketed paste.  Pasted text arrives wrapped in
     // `CSI 200 ~` and `CSI 201 ~`, so an editor can tell a paste from
     // typing.
     AnsiBracketedPaste
-    // `CSI ? 1000 h` — report button presses and releases.
+    // `CSI ? 1000 h`, which reports button presses and releases.
     AnsiMouseClicks
-    // `CSI ? 1002 h` — the above, plus motion while a button is down.
+    // `CSI ? 1002 h`, which reports the above plus motion while a
+    // button is down.
     AnsiMouseDrag
-    // `CSI ? 1003 h` — the above, plus motion with no button down.
+    // `CSI ? 1003 h`, which reports the above plus motion with no
+    // button down.
     AnsiMouseMotion
-    // `CSI ? 1006 h` — report mouse positions in the SGR encoding,
-    // which is the only one that works past column 223.
+    // `CSI ? 1006 h`, which reports mouse positions in the SGR
+    // encoding.  That encoding is the only one that works past column
+    // 223.
     AnsiMouseSgr
-    // `CSI ? 1004 h` — report focus in and out.
+    // `CSI ? 1004 h`, which reports focus in and out.
     AnsiFocusEvents
-    // `CSI ? 2026 h` — synchronised output: the terminal holds the
+    // `CSI ? 2026 h`, synchronised output.  The terminal holds the
     // frame until the mode is reset, so a large update cannot tear.
     AnsiSyncOutput
     // Any other DEC private mode, by number.
@@ -338,7 +344,7 @@ pub fn mode_is_private(mode: AnsiMode) -> Bool
 // ── Colour and attributes ───────────────────────────────────────────
 
 // sgr appends `CSI <params> m` for a parameter list the caller already
-// has — from `sgr.sgr_transition`, `sgr.sgr_full` or its own
+// has, from `sgr.sgr_transition`, `sgr.sgr_full` or its own
 // arithmetic.
 pub fn sgr(out: [u8], params: [Int]) -> [u8]
     csi(out, 0, params, [], 0x6D)
@@ -351,9 +357,9 @@ pub fn sgr_reset(out: [u8]) -> [u8]
 // `from` to `to`, and appends nothing at all when the two are equal.
 //
 // The function a renderer calls once per run of cells.  Appending
-// nothing for an unchanged style is the behaviour that matters: a
-// screen update where most cells share a style is mostly this
-// function returning its argument.
+// nothing for an unchanged style is the behaviour that matters.  A
+// screen update where most cells share a style is mostly this function
+// answering its argument.
 //
 // ```novo
 // use sgr
@@ -375,9 +381,9 @@ pub fn sgr_change(out: [u8], from: sgr.SgrAttrs, to: sgr.SgrAttrs) -> [u8]
 
 // put_codepoint appends one codepoint, UTF-8 encoded.
 //
-// The one function on the writing side that a device needs and cannot
-// write itself in one line, because the four-branch encoding is where
-// a hand-rolled terminal writer gets a wide character wrong.
+// The one function on the writing side that a caller cannot write
+// itself in one line.  The four-branch encoding is where a hand-rolled
+// terminal writer gets a wide character wrong.
 pub fn put_codepoint(out: [u8], ch: Int) -> [u8]
     let c = if ch < 0 or ch > 0x10FFFF or ch >= 0xD800 and ch <= 0xDFFF
         0xFFFD
@@ -409,11 +415,11 @@ pub fn put_text(out: [u8], text: Str) -> [u8]
 // control and every ESC replaced by a printable stand-in.
 //
 // What a program renders a log line, a filename or a commit message
-// with.  Text from outside the program can contain `ESC ] 52 ; c ;` —
-// a clipboard write — and a renderer that passed it through has handed
-// whoever wrote that text the user's clipboard.  There is no flag for
-// "trust me": a caller that genuinely wants the sequences calls
-// `put_text`, where the name says so.
+// with.  Text from outside the program can contain `ESC ] 52 ; c ;`,
+// which is a clipboard write, and a renderer that passed it through has
+// handed whoever wrote that text the user's clipboard.  There is no
+// flag that turns the replacement off.  A caller that wants the
+// sequences calls `put_text`, where the name says so.
 pub fn put_text_safe(out: [u8], text: Str) -> [u8]
     var o = out
     let n = str.len(text)
@@ -431,9 +437,9 @@ pub fn put_text_safe(out: [u8], text: Str) -> [u8]
         else if b == 0x7F
             o = put(put(o, 0x5E), 0x3F)
         else if b == 0xC2 and i + 1 < n and next >= 0x80 and next <= 0x9F
-            // A C1 control, which in UTF-8 is two bytes.  `~` rather
-            // than `^` so that a reader can tell `ESC` from the 8-bit
-            // CSI it stands in for.
+            // A C1 control, which in UTF-8 is two bytes.  It uses `~`
+            // rather than `^`, so that a reader can tell `ESC` from the
+            // 8-bit CSI it stands in for.
             o = put(put(o, 0x7E), 0x40 + (next - 0x80))
             consumed = true
         else
@@ -444,9 +450,9 @@ pub fn put_text_safe(out: [u8], text: Str) -> [u8]
 
 // osc appends `OSC <code> ; <payload> <terminator>`.
 //
-// The payload is bytes rather than a string because OSC 52's is base64
-// and OSC 4's is a colour specification, and neither is text this
-// package should have an opinion about.
+// The payload is bytes rather than a string, because OSC 52's is base64
+// and OSC 4's is a colour specification.  Neither is text this package
+// should have an opinion about.
 pub fn osc(out: [u8], code: Int, payload: [u8], terminator: AnsiStringEnd) -> [u8]
     var o = put(put(out, 0x1B), 0x5D)
     o = put_int(o, code)
@@ -457,27 +463,27 @@ pub fn osc(out: [u8], code: Int, payload: [u8], terminator: AnsiStringEnd) -> [u
 
 // AnsiStringEnd is which terminator to write a string sequence with.
 //
-// A separate type from the parser's `AnsiTerminator` on purpose: that
-// one reports what arrived, this one chooses what to send, and the two
-// are not the same decision — a program answering a query echoes the
-// terminator it was asked with, and a program starting an exchange
-// picks ST.
+// It is a separate type from the parser's `AnsiTerminator` on purpose.
+// That one reports what arrived and this one chooses what to send, and
+// the two are not the same decision.  A program answering a query
+// echoes the terminator it was asked with, and a program starting an
+// exchange picks ST.
 pub enum AnsiStringEnd
     AnsiEndWithBel
     AnsiEndWithSt
 
-// set_title appends OSC 0 — the window title and the icon name
-// together, which is what every terminal actually does with OSC 0, 1
-// and 2.
+// set_title appends OSC 0, which sets the window title and the icon
+// name together.  That is what every terminal does with OSC 0, 1 and
+// 2.
 pub fn set_title(out: [u8], title: Str) -> [u8]
     osc(out, 0, str_bytes(title), AnsiEndWithBel)
 
 // clipboard_write appends OSC 52 with an already-base64 payload.
 //
-// The base64 is the caller's because a `core` package that grew a
-// base64 encoder for one sequence would be carrying it for every
-// consumer that never writes a clipboard, and base64-nv is a row of
-// its own.
+// The base64 is the caller's, because a `core` package that grew a
+// base64 encoder for one sequence would carry it for every consumer
+// that never writes a clipboard.  base64-nv is the package that
+// encodes it.
 pub fn clipboard_write(out: [u8], selection: Str, base64_payload: Str) -> [u8]
     osc(out, 52, str_bytes(selection + ";" + base64_payload), AnsiEndWithSt)
 
@@ -486,9 +492,9 @@ pub fn clipboard_write(out: [u8], selection: Str, base64_payload: Str) -> [u8]
 // csi appends `CSI <private> <params> <intermediates> <final>` for a
 // sequence this module does not name.
 //
-// The escape hatch, and it is `pub` on purpose: a package that made
-// its callers choose between "a function I provide" and "raw bytes I
-// hope are right" would get raw bytes. `private` is 0 for none.
+// The escape hatch, and it is `pub` on purpose.  A package that made
+// its callers choose between a function it provides and raw bytes they
+// hope are right would get raw bytes.  `private` is 0 for none.
 pub fn csi(out: [u8], private: Int, params: [Int], intermediates: [Int], final_byte: Int) -> [u8]
     var o = csi_open(out)
     if private != 0
@@ -503,19 +509,18 @@ pub fn csi(out: [u8], private: Int, params: [Int], intermediates: [Int], final_b
         o = put(o, b)
     put(o, final_byte)
 
-// csi_params appends a CSI built from a parameter SNAPSHOT, colon
+// csi_params appends a CSI built from a parameter snapshot, colon
 // groups and all.
 //
-// ADDED IN 0.1.0, BESIDE `csi` RATHER THAN IN PLACE OF IT.  `csi`
-// takes `params: [Int]`, which is a list of semicolon-separated
-// parameters and cannot express a colon group — so `CSI 4:3 m`, the
-// curly underline, and `CSI 38:2::R:G:B m`, T.416's direct colour,
-// were unreachable through the published surface.  This takes the
-// parser's own `AnsiParams`, whose flat values-and-groups pair carries
-// exactly that, so a sequence this package PARSED can be written back
-// out byte for byte.
+// It stands beside `csi`, which takes `params: [Int]`.  That is a list
+// of semicolon-separated parameters and cannot express a colon group,
+// so `CSI 4:3 m`, the curly underline, and `CSI 38:2::R:G:B m`, T.416's
+// direct colour, have no spelling through it.  This takes the parser's
+// own `AnsiParams`, whose flat values-and-groups pair carries them, so
+// a sequence this package parsed can be written back out byte for
+// byte.
 //
-// An empty slot — the middle one of `38:2::R:G:B` — is written as
+// An empty slot, such as the middle one of `38:2::R:G:B`, is written as
 // nothing between two colons, which is what it was.
 //
 // ```novo

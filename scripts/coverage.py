@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Union line coverage over src/, merged across the suites.
 
-`novo test --cov` measures ONE suite file at a time (novo 0.9.1;
-docs/publishing.md Test coverage says a package-wide mode is on the
-way), and this package's five suites each reach a different part of
-`src/`.  The publish rule is about the package, so this merges the
-per-suite lcov files `--report=lcov` leaves in `_novo/` and reports
-the union, counting only lines under `src/`.
+`novo test --cov` measures one suite file at a time on novo 0.9.1, and
+docs/publishing.md Test coverage says a package-wide mode is on the way.
+This package's five suites each reach a different part of `src/`, and
+the publish rule is about the package.  This therefore merges the
+per-suite lcov files `--report=lcov` leaves in `_novo/` and reports the
+union, counting only lines under `src/`.
 
     for f in tests/*_tests.nv; do
         novo test "$f" --cov --report=lcov >/dev/null

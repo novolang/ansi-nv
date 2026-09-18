@@ -1,15 +1,11 @@
-// sgr_tests.nv — the API suite for the attribute model, the writer and
-// the query pairs.
+// sgr_tests.nv — the suite for the attribute model, the writer and the
+// query pairs.  Run with `--isolate` for one verdict per `@test`.
 //
-// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
-// assertion here reaches `not implemented: ansi-nv.<module>.<fn>`.  Run
-// with `--isolate` for one verdict per `@test`.
-//
-// The cases that matter most are the two nobody writes: that
-// `sgr_change` emits NOTHING when nothing changed, and that a colour
-// read out of a parameter list reports how many parameters it took.
-// Both are where a renderer that looked correct quadruples its output
-// or mis-reads the rest of a sequence.
+// The cases that matter most are the two nobody writes.  The first is
+// that `sgr_change` emits no bytes when nothing changed.  The second is
+// that a colour read out of a parameter list reports how many
+// parameters it took.  Both are where a renderer that looked correct
+// quadruples its output or mis-reads the rest of a sequence.
 
 use std.test
 use std.list
@@ -69,10 +65,10 @@ fn test_bold_and_dim_are_separate_flags() [io]
 
 // The parameters of a `CSI <text> m`, as the parser collected them.
 //
-// The suite the interface shipped with built this from
-// `params_of(parser_new())`, which is a snapshot of a parser that has
-// never been fed and therefore holds no parameters at all — so the
-// case asserted nothing it claimed to.  0.1.0 feeds the sequence.
+// The sequence is fed a byte at a time.  A snapshot taken from
+// `params_of(parser_new())` would hold no parameters at all, because
+// that parser has never been fed, and a case built on one would assert
+// nothing.
 fn params_of_csi(text: Str) -> vtparse.AnsiParams
     var p = vtparse.parser_new()
     var last = vtparse.feed_byte(p, 0x1B)
@@ -87,7 +83,7 @@ fn params_of_csi(text: Str) -> vtparse.AnsiParams
 
 @test
 fn test_an_extended_colour_reports_what_it_consumed() [io]
-    // `38;2;10;20;30` — the semicolon form: five parameters.
+    // `38;2;10;20;30`, the semicolon form, which is five parameters.
     let semi = params_of_csi("38;2;10;20;30")
     match sgr.read_extended_color(semi, 0)
         Some(read) =>
@@ -195,8 +191,8 @@ fn test_a_private_mode_writes_its_marker() [io]
 
 @test
 fn test_untrusted_text_loses_its_escapes() [io]
-    // An OSC 52 hidden in a log line: passed through, it hands whoever
-    // wrote the line the user's clipboard.
+    // An OSC 52 hidden in a log line.  Passed through, it hands
+    // whoever wrote the line the user's clipboard.
     let hostile = "hello\x1b]52;c;QUJD\x07"
 
     test.case("the safe writer produces something")
@@ -222,8 +218,8 @@ fn test_a_query_and_its_answer_are_two_halves() [io]
 
 @test
 fn test_a_reply_is_recognised_off_an_ordinary_dispatch() [io]
-    // `CSI 12 ; 40 R` fed one byte at a time, exactly as it arrives
-    // mixed in with the user's typing.
+    // `CSI 12 ; 40 R` fed one byte at a time, as it arrives mixed in
+    // with the user's typing.
     var p = vtparse.parser_new()
     var last = vtparse.feed_byte(p, 0)
     for b in [0x1B, 0x5B, 0x31, 0x32, 0x3B, 0x34, 0x30, 0x52]
@@ -242,7 +238,7 @@ fn test_a_reply_is_recognised_off_an_ordinary_dispatch() [io]
 
 @test
 fn test_a_dispatch_that_is_not_a_reply_says_so_cheaply() [io]
-    // `CSI 2 J` — an erase, not an answer to anything.
+    // `CSI 2 J`, an erase rather than an answer to anything.
     var p = vtparse.parser_new()
     var last = vtparse.feed_byte(p, 0)
     for b in [0x1B, 0x5B, 0x32, 0x4A]

@@ -1,33 +1,30 @@
 // vtquery.nv — the questions a program asks a terminal, and the
 // answers read back off the parser.
 //
-// Every body here is a `todo()`; the signatures are the design.
-//
-// A QUERY IS TWO HALVES AND A DEADLOCK.  A program writes `CSI 6 n`
-// and the terminal writes `CSI <row> ; <col> R` back — on the INPUT
-// stream, mixed in with whatever the user is typing.  So the two
-// halves live in different places: `write_query` builds the question
-// into the caller's buffer, and `reply_of` reads the answer out of a
-// CSI dispatch the ordinary parser produced.  Nothing here waits, and
-// nothing here reads, because a `core` package cannot do either and
+// A query is two halves.  A program writes `CSI 6 n` and the terminal
+// writes `CSI <row> ; <col> R` back, on the input stream, mixed in with
+// whatever the user is typing.  The two halves therefore live in
+// different places.  `write_query` builds the question into the
+// caller's buffer, and `reply_of` reads the answer out of a CSI
+// dispatch the ordinary parser produced.  Nothing here waits and
+// nothing here reads, because a `core` package can do neither, and
 // because the caller is the only party that knows what to do when the
 // answer never comes.
 //
-// THE ANSWER MAY NEVER COME, and that is the interface's real subject.
-// A terminal that does not implement a query does not say so — it
-// stays silent, and a program that blocked on the reply hangs.  Every
-// consumer therefore needs a timeout, and the timeout is the host's:
-// this package's contribution is that a reply is RECOGNISABLE when it
-// arrives, so the host's read loop can hand every dispatch here and
-// act on the ones that are answers.
+// The answer may never come.  A terminal that does not implement a
+// query does not say so, it stays silent, and a program that blocked on
+// the reply hangs.  Every consumer therefore needs a timeout, and the
+// timeout belongs to the host.  What this module provides is that a
+// reply is recognisable when it arrives, so a read loop can hand every
+// dispatch here and act on the ones that are answers.
 //
-// WHY IT IS NOT IN keymap-nv.  A reply arrives on the same stream as
-// the keys and looks exactly like one — `CSI 1 ; 1 R` is a reply and
-// `CSI 1 ; 5 R` is not a key but could be mistaken for one by a
-// decoder that had never heard of DSR.  Both packages therefore have
-// to know the shape.  It lives here because a reply is a terminal's
-// answer to something this package's writer asked, and keymap-nv
-// reports an unrecognised CSI rather than guessing.
+// The replies are here rather than in keymap-nv.  A reply arrives on
+// the same stream as the keys and looks like one.  `CSI 1 ; 1 R` is a
+// reply, and `CSI 1 ; 5 R` is not a key but could be mistaken for one
+// by a decoder that had never heard of DSR.  Both packages therefore
+// have to know the shape.  It lives here because a reply is a
+// terminal's answer to something this package's writer asked, and
+// keymap-nv reports an unrecognised CSI rather than guessing.
 
 use vtparse
 use seqwrite
@@ -35,66 +32,66 @@ use seqwrite
 // AnsiQuery is something a program can ask the terminal.
 //
 // Only the queries with a defined, parseable answer are here.  A
-// terminal has dozens more; the ones whose replies are free-form
-// strings belong to whoever is parsing that string, and `seqwrite.csi`
-// is how they get asked.
+// terminal has dozens more.  The ones whose replies are free-form
+// strings belong to whoever parses that string, and `seqwrite.csi` is
+// how they get asked.
 pub enum AnsiQuery
-    // DSR 6, `CSI 6 n` — where is the cursor?  The one query almost
-    // every terminal answers, and the one a program uses to find the
-    // window size when it has no other way to ask.
+    // DSR 6, `CSI 6 n`, which asks where the cursor is.  Almost every
+    // terminal answers it, and a program uses it to find the window
+    // size when it has no other way to ask.
     AnsiCursorPositionQuery
-    // DSR 5, `CSI 5 n` — are you there?  A terminal answers
-    // `CSI 0 n`, and the value is that a program can tell a live
-    // terminal from a pipe without a system call.
+    // DSR 5, `CSI 5 n`, which asks whether the terminal is there.  A
+    // terminal answers `CSI 0 n`, so a program can tell a live terminal
+    // from a pipe without a system call.
     AnsiDeviceStatusQuery
-    // Primary DA, `CSI c` — what are you?  The answer names the
-    // terminal class and its options.
+    // Primary DA, `CSI c`, which asks what the terminal is.  The answer
+    // names the terminal class and its options.
     AnsiDeviceAttributesQuery
-    // Secondary DA, `CSI > c` — what version are you?  How a program
-    // tells one emulator from another when it has to.
+    // Secondary DA, `CSI > c`, which asks what version the terminal is.
+    // It is how a program tells one emulator from another.
     AnsiSecondaryAttributesQuery
-    // `CSI 1 8 t` — how many rows and columns is the text area?  A
-    // fallback for a program with no `TIOCGWINSZ`, and the answer a
-    // terminal multiplexer sometimes gets wrong.
+    // `CSI 1 8 t`, which asks how many rows and columns the text area
+    // has.  It is the fallback for a program with no `TIOCGWINSZ`, and
+    // the answer a terminal multiplexer sometimes gets wrong.
     AnsiTextAreaSizeQuery
-    // DECRQM, `CSI ? <mode> $ p` — is this mode set?  The only
-    // reliable way to ask whether a terminal supports synchronised
-    // output before using it.
+    // DECRQM, `CSI ? <mode> $ p`, which asks whether a mode is set.  It
+    // is the only reliable way to ask whether a terminal supports
+    // synchronised output before using it.
     AnsiModeQuery(mode: seqwrite.AnsiMode)
 
 // AnsiModeSetting is DECRPM's five answers.
 //
-// "Not recognised" and "reset" are different answers and a program
-// that folded them would enable a feature the terminal has never heard
-// of: an unrecognised mode reports 0, and a supported one that happens
-// to be off reports 2.
+// Not recognised and reset are different answers, and a program that
+// folded them would enable a feature the terminal has never heard of.
+// An unrecognised mode reports 0, and a supported one that happens to
+// be off reports 2.
 pub enum AnsiModeSetting
-    // 0 — the terminal does not know this mode.
+    // 0.  The terminal does not know this mode.
     AnsiModeUnknown
-    // 1 — set.
+    // 1.  Set.
     AnsiModeIsSet
-    // 2 — reset.
+    // 2.  Reset.
     AnsiModeIsReset
-    // 3 — permanently set; the terminal will not turn it off.
+    // 3.  Permanently set, and the terminal will not turn it off.
     AnsiModeAlwaysSet
-    // 4 — permanently reset.
+    // 4.  Permanently reset.
     AnsiModeAlwaysReset
 
 // AnsiReply is a terminal's answer, read back into a value.
 pub enum AnsiReply
-    // CPR — `CSI <row> ; <col> R`, both one-based.
+    // CPR, `CSI <row> ; <col> R`, with both numbers one-based.
     AnsiCursorPositionReply(row: Int, col: Int)
-    // DSR — `CSI 0 n`, the terminal saying it is there.
+    // DSR, `CSI 0 n`, the terminal saying it is there.
     AnsiDeviceOkReply
-    // Primary DA — `CSI ? <class> ; <options> c`.  The options are
-    // kept as a list because their meaning is per-class and a program
-    // that cares is looking for one number in it.
+    // Primary DA, `CSI ? <class> ; <options> c`.  The options are kept
+    // as a list because their meaning depends on the class, and a
+    // program that cares is looking for one number in it.
     AnsiDeviceAttributesReply(class: Int, options: [Int])
-    // Secondary DA — `CSI > <kind> ; <version> ; <patch> c`.
+    // Secondary DA, `CSI > <kind> ; <version> ; <patch> c`.
     AnsiSecondaryAttributesReply(kind: Int, version: Int, patch: Int)
     // `CSI 8 ; <rows> ; <cols> t`, the answer to the text-area query.
     AnsiTextAreaSizeReply(rows: Int, cols: Int)
-    // DECRPM — `CSI ? <mode> ; <setting> $ y`.
+    // DECRPM, `CSI ? <mode> ; <setting> $ y`.
     AnsiModeReply(mode: Int, setting: AnsiModeSetting)
 
 // ── Reading one back ────────────────────────────────────────────────
@@ -102,11 +99,11 @@ pub enum AnsiReply
 // The five replies whose whole content fits in three parameters.
 //
 // `reply_of` and `reply_of_params` both come through here, so the
-// parser path and the snapshot path cannot answer differently — which
-// is the one bug a second copy of this table would eventually have.
-// Primary DA is the exception and is handled by its callers, because
-// its options are a LIST and building one is an allocation this
-// function must not make on the dispatches that are not replies.
+// parser path and the snapshot path cannot answer differently, which is
+// the one bug a second copy of this table would have.  Primary DA is
+// the exception and is handled by its callers, because its options are
+// a list, and building one is an allocation this function must not make
+// on the dispatches that are not replies.
 fn decode(marker: Int, count: Int, p0: Int, p1: Int, p2: Int, intermediate: Int,
           final_byte: Int) -> ?AnsiReply
     if final_byte == 0x52 and marker == vtparse.NO_PRIVATE_MARKER and count >= 2
@@ -123,13 +120,13 @@ fn decode(marker: Int, count: Int, p0: Int, p1: Int, p2: Int, intermediate: Int,
     else
         None
 
-// Whether a dispatch has primary DA's shape: `CSI ? <class> ; … c`.
+// Whether a dispatch has primary DA's shape, `CSI ? <class> ; … c`.
 fn is_primary_da(marker: Int, final_byte: Int) -> Bool
     final_byte == 0x63 and marker == 0x3F
 
 // DECRPM's five answers.  Anything else is `AnsiModeUnknown`, which is
-// also what 0 means, because a terminal reporting a number this
-// revision does not define has not told us the mode is on.
+// also what 0 means.  A terminal reporting a number this revision does
+// not define has not said that the mode is on.
 fn mode_setting(n: Int) -> AnsiModeSetting
     if n == 1
         AnsiModeIsSet
@@ -151,9 +148,11 @@ fn setting_number(s: AnsiModeSetting) -> Int
         AnsiModeAlwaysSet   => 3
         AnsiModeAlwaysReset => 4
 
-// Primary DA's options: every parameter after the terminal class.
-// An explicit loop rather than `list.map` over `list.range`: the range
-// is refused at the `wasm` tier, and this package builds there.
+// Primary DA's options, which are every parameter after the terminal
+// class.
+//
+// An explicit loop rather than `list.map` over `list.range`, because
+// `list.range` is refused for wasm and this package builds there.
 fn options_of(p: vtparse.AnsiParser) -> [Int]
     var out: [Int] = []
     for i in 1..vtparse.param_count(p)
@@ -230,10 +229,10 @@ pub fn write_query(out: [u8], q: AnsiQuery) -> [u8]
 
 // reply_of reads a CSI dispatch back into a typed reply.
 //
-// `None` when the dispatch is not one of the six answers — which is
-// most dispatches, because this function is meant to be called on
-// every one and to say no cheaply.  The parser is passed rather than a
-// snapshot so that a caller on the byte path pays nothing.
+// `None` when the dispatch is not one of the six answers, which is most
+// dispatches.  The function is meant to be called on every one and to
+// say no cheaply.  The parser is passed rather than a snapshot, so that
+// a caller on the byte path copies no parameter list.
 //
 // ```novo
 // use vtparse
@@ -282,22 +281,23 @@ pub fn reply_of_params(params: vtparse.AnsiParams, final_byte: Int) -> ?AnsiRepl
 // answers says whether a reply is an answer to a particular query.
 //
 // A program with more than one query in flight needs to match them up,
-// and matching on the variant is not enough: two DECRQMs for different
-// modes come back as two `AnsiModeReply`s that differ only in a field.
+// and matching on the variant is not enough.  Two DECRQMs for different
+// modes come back as two `AnsiModeReply`s that differ only in a
+// field.
 pub fn answers(q: AnsiQuery, r: AnsiReply) -> Bool
-    // The shape has to agree, and so does the mode number — which is
-    // -1 on both sides for the five questions that have only one
-    // answer each, and the actual number for DECRQM, where two
-    // queries in flight come back as two `AnsiModeReply`s that differ
-    // in nothing else.
+    // The shape has to agree, and so does the mode number.  That
+    // number is -1 on both sides for the five questions with one
+    // answer each, and the mode itself for DECRQM, where two queries in
+    // flight come back as two `AnsiModeReply`s that differ in nothing
+    // else.
     query_kind(q) == reply_kind(r) and query_mode(q) == reply_mode(r)
 
-// write_reply appends the answer a TERMINAL would send.
+// write_reply appends the answer a terminal would send.
 //
 // The mirror of `write_query`, and it is here because the package is
-// meant to be usable from both ends: a terminal emulator built on this
-// parser has to answer the queries its child asks, and a test that
-// feeds a program a synthetic terminal has to produce them.
+// usable from both ends.  A terminal emulator built on this parser has
+// to answer the queries its child asks, and a test that feeds a program
+// a synthetic terminal has to produce them.
 pub fn write_reply(out: [u8], r: AnsiReply) -> [u8]
     match r
         AnsiCursorPositionReply(row, col)                  =>

@@ -1,17 +1,16 @@
 // writer_tests.nv — the bytes, one sequence at a time, and the SGR
 // arithmetic behind them.
 //
-// EVERY CASE HERE ASSERTS THE EXACT BYTES.  The suites beside this one
-// assert that a writer appended SOMETHING, which is the right check
-// for a surface that does not exist yet and the wrong one for a
-// surface that does: `CSI 2 ; 1 H` and `CSI 1 ; 2 H` both append six
-// bytes, and only one of them puts the cursor where the caller asked.
-// The expected byte lists are read out of ECMA-48 for the standard
-// functions, xterm's `ctlseqs` for the private modes and the OSC
-// strings, and ITU-T T.416 for the colon forms.
+// Every case here asserts the exact bytes.  A case that asserted only
+// that a writer appended something would not tell `CSI 2 ; 1 H` from
+// `CSI 1 ; 2 H`, which are both six bytes, and only one of them puts
+// the cursor where the caller asked.  The expected byte lists are read
+// out of ECMA-48 for the standard functions, xterm's `ctlseqs` for the
+// private modes and the OSC strings, and ITU-T T.416 for the colon
+// forms.
 //
 // The parse direction is the oracle for the write direction wherever
-// both exist: a sequence this package writes is fed back through its
+// both exist.  A sequence this package writes is fed back through its
 // own parser and has to come out as what it was.
 
 use std.test
@@ -366,7 +365,7 @@ fn test_the_raw_writers_put_every_part_where_it_belongs() [io]
 
 @test
 fn test_csi_params_round_trips_a_sequence_this_package_parsed() [io]
-    // `CSI 38:2::1:2:3 m` — the T.416 colon form, with the empty
+    // `CSI 38:2::1:2:3 m`, the T.416 colon form, with the empty
     // colour-space slot that a flat parameter list cannot carry.
     let written = seqwrite.csi_params([], params_of_csi("38:2::1:2:3"), 0x6D)
 
@@ -540,8 +539,8 @@ fn test_an_extended_colour_is_read_in_both_spellings() [io]
 
 @test
 fn test_an_extended_colour_inside_a_longer_list_does_not_eat_its_neighbours() [io]
-    // The bug the `consumed` count exists to prevent: without it the
-    // 30 of `38;2;10;20;30` lands on the fold as "black foreground".
+    // The bug the `consumed` count exists to prevent.  Without it the
+    // 30 of `38;2;10;20;30` lands on the fold as a black foreground.
     let a = fold("1;38;2;10;20;30;3")
 
     test.case("the styles on either side of the colour are both set")
@@ -683,7 +682,7 @@ fn test_a_colour_transition_emits_the_colour_and_nothing_else() [io]
 
 @test
 fn test_a_colon_only_underline_style_survives_the_writer() [io]
-    // The case the published `[Int]` return cannot carry, which is why
+    // The case the `[Int]` return cannot carry, which is why
     // `sgr_transition_sub` exists.
     let plain = sgr.attrs_default()
     let curly = fold("4:3")

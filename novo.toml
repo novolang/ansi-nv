@@ -1,24 +1,21 @@
 [package]
 name        = "ansi-nv"
-version     = "0.1.0"
-description = "The escape-sequence layer with no terminal under it: the VT/xterm state machine as a byte-at-a-time parser that yields typed actions, the SGR attribute model with all three colour forms, a writer that BUILDS sequences into a caller's buffer instead of printing them, and the query/response pairs a program needs."
+version     = "0.1.1"
+description = "The escape-sequence layer with no terminal under it: the VT/xterm state machine as a byte-at-a-time parser that yields typed actions, the SGR attribute model with all three colour forms, a writer that builds sequences into a caller's buffer instead of printing them, and the query/response pairs a program needs."
 license     = "Apache-2.0"
 
-# The first release with bodies, published over the 0.0.1 interface.
-# `novo pkg publish` refuses a `0.0.x` once a body is real, so the
-# promotion is the version and this line together.  `experimental`
-# because the API tests were written against the signatures before the
-# bodies existed, and two of them turned out to assert things no
-# implementation could satisfy — see the CHANGELOG.  Nothing outside
-# this package has used the surface yet.
+# `experimental` because no program outside this package has used the
+# surface yet, and the tests were written against the signatures rather
+# than by a consumer.
 stability   = "experimental"
 
-# `core`, and the whole design follows from it.  A terminal is the one
-# place a library is most tempted to print, so nothing here does: bytes
-# arrive as arguments and sequences are appended to a `[u8]` the caller
-# owns and then writes itself.  The parser is a value — `feed_byte`
-# takes one and returns one — which is what lets a caller keep the
-# parser a dispatch fired with and read its parameters afterwards.
+# `core`, and the design follows from it.  A terminal is the one place
+# a library is most tempted to print, and nothing here does.  Bytes
+# arrive as arguments, and sequences are appended to a `[u8]` the
+# caller owns and writes itself.  The parser is a value, because
+# `feed_byte` takes one and returns one, which is what lets a caller
+# keep the parser a dispatch fired with and read its parameters
+# afterwards.
 layer       = "core"
 
 category    = "terminal"
@@ -27,21 +24,21 @@ tags        = ["ansi", "vt100", "xterm", "escape-sequences", "sgr", "csi", "osc"
 repository  = "https://github.com/novolang/ansi-nv"
 maintainers = ["novo-lang"]
 # Built, tested and measured on 0.9.1.  The floor is the toolchain the
-# release was actually checked against rather than the oldest one that
-# might work.
+# release was checked against rather than the oldest one that might
+# work.
 novo        = ">= 0.9.1"
 
-# A library: no `main`, so `novo pkg build` type-checks and
-# effect-checks every module under `src/` and writes no binary.
+# The package is a library with no `main`, so `novo pkg build`
+# type-checks and effect-checks every module under `src/` and writes no
+# binary.
 
 [docs.pages]
 "README.md" = "Escape sequences, with no terminal attached"
 
 [dependencies]
-# None, and that is a claim rather than an accident.  The state machine
-# is a switch over a byte, the SGR model is a struct of flags and three
-# colours, and the writer appends decimal digits to a list — a package
-# that needed a dependency for any of that would be the wrong package.
-# It is also what lets the whole surface link for a Cortex-M, which is
-# the one dependency-shaped decision here: a device driving a serial
-# console wants exactly this and can afford nothing more.
+# None, and bitstream-nv or a codec package is what a reader might
+# expect here.  The state machine is a switch over a byte, the SGR
+# model is a struct of flags and three colours, and the writer appends
+# decimal digits to a list.  A dependency would also have to build
+# wherever this package builds, and a device driving a serial console
+# is the reader the `core` layer is for.

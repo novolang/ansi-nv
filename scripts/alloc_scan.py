@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """What allocates on the feed path, read off the emitted LLVM.
 
-crypto-nv's shape: `tests/alloc_probe.nv` is built at `--opt=0` so that
-every function is still there to attribute an allocation to, and this
-reads `_novo/alloc_probe.ll` and prints the `novo_alloc*` call count
-per function of this package.
+It has crypto-nv's shape.  `tests/alloc_probe.nv` is built at `--opt=0`,
+so that every function is still there to attribute an allocation to.
+This reads `_novo/alloc_probe.ll` and prints the `novo_alloc*` call
+count per function of this package.
 
     novo build --opt=0 tests/alloc_probe.nv -o /tmp/alloc_probe
     python3 scripts/alloc_scan.py
 
-See `tests/alloc_probe.nv` for what the numbers mean and why they are
-not zero.
+`tests/alloc_probe.nv` says what the numbers mean and why they are not
+zero.
 """
 import os, re, sys, collections
 

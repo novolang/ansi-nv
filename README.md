@@ -17,15 +17,6 @@ Seven packages on the registry are built on it:
 [logging-nv](https://novo-lang.org/packages/logging-nv) and
 [logging-core-nv](https://novo-lang.org/packages/logging-core-nv).
 
-**Status: implemented.** Every function has a body and the suites are
-green. The parser is the one
-[novo-vte](https://novo-lang.org/packages/novo-vte) reads terminal
-output with: the same state machine, moved out from under its grid of
-cells and given the writing half it did not have. novo-vte will depend
-on this package rather than carry its own copy of it. The API is marked
-experimental because it was designed before it was implemented, and no
-program outside this package has used it yet.
-
 ## What it is
 
 A stream from a terminal, or to one, is text with escape sequences mixed
@@ -146,9 +137,10 @@ Build and test with `novo pkg build` and `novo test`.
 
 ## How to choose an entry point
 
-**`vtparse.feed_byte` takes one byte and allocates nothing.** It is the
-entry point everything else is written over, and the one a device uses.
-The parameters of a dispatch are read off the parser it returned.
+**`vtparse.feed_byte` takes one byte and copies no parameter list.** It
+is the entry point everything else is written over, and the cheaper of
+the two. The parameters of a dispatch are read off the parser it
+returned.
 
 **`vtparse.feed` takes a whole chunk and answers a list.** Each entry
 pairs an action with a copy of the parameters it fired with, so a caller
@@ -241,8 +233,8 @@ byte for byte. Rule 14 below says which sequences need it.
     for all three. `sgr.sgr_transition_sub` and `sgr.sgr_full_sub`
     answer the same thing with the colon groups intact, and
     `seqwrite.csi_params` puts one on the wire.
-    **`seqwrite.sgr_change` already uses them**, so a renderer that
-    calls it gets the colon form without doing anything.
+    `seqwrite.sgr_change` uses them already, so a renderer that calls
+    it gets the colon form without doing anything.
 15. **A byte at 0x80 or above in ordinary text is UTF-8, not a C1
     control.** The parser decodes it as the first byte of a codepoint.
     The 8-bit forms of CSI, OSC and the rest are therefore not
@@ -250,29 +242,25 @@ byte for byte. Rule 14 below says which sequences need it.
 
 ## Running on a microcontroller
 
-novo-lang lets a package state which of its modules can run on a device
-with no heap allocator, and the compiler checks that claim on every
-build. **This package makes no such claim in version 0.1.0, and the
-reason is worth stating plainly.**
+No module of this package builds for a device with no heap allocator.
+The compiler checks that on every build, and version 0.1.1 does not
+pass it.
 
 A device with no heap allocator may not use a container that grows.
-Three fields of `AnsiParser` — the parameters, their groups and the
-intermediate bytes — are lists, which grow. The compiler also stores a
-structure on the stack only when every one of its fields is a fixed-size
-value, so a structure with a list field lives on the heap: feeding one
-byte allocates two of them, the parser that comes back and the step that
-carries it.
+Three fields of `AnsiParser` are lists, which grow. They are the
+parameters, their groups and the intermediate bytes. The compiler also
+stores a structure on the stack only when every one of its fields is a
+fixed-size value, so a structure with a list field lives on the heap.
+Feeding one byte therefore allocates two of them, the parser that comes
+back and the step that carries it.
 
-The 0.0.1 release shipped a program that built for an nRF52 board, and
-it built because every function was an unimplemented stub. With the
-functions written, it does not.
-
-What has to change is those three fields: a fixed-capacity buffer, of
-the kind [heapless-nv](https://novo-lang.org/packages/heapless-nv)
-provides, in place of each list. That changes a type every program using
-this package can see, so it is a release of its own rather than a patch.
-Nothing else in the package stands in the way: no function here reads a
-clock, opens a file or performs input or output of any kind.
+What has to change is those three fields. Each one becomes a
+fixed-capacity buffer, of the kind
+[heapless-nv](https://novo-lang.org/packages/heapless-nv) provides.
+That changes a type every program using this package can see, so it is
+a release of its own rather than a patch. Nothing else stands in the
+way, because no function here reads a clock, opens a file or performs
+input or output of any kind.
 
 `tests/alloc_probe.nv` is a small program whose compiled output can be
 read for allocations, and `scripts/alloc_scan.py` prints one count per
@@ -301,6 +289,9 @@ a reader can check the number for themselves.
   decoder's work.
 - **Key and mouse decoding.** Input is a different state machine and
   lives in [keymap-nv](https://novo-lang.org/packages/keymap-nv).
+- **The queries whose reply is a free-form string.** `vtquery` covers
+  the six questions whose answer is a parameter list. `seqwrite.csi`
+  asks the others, and whoever reads that string parses it.
 - **Any function that writes.** See the opening paragraph.
 
 ## Related packages
@@ -357,11 +348,11 @@ the argument types a consumer would pass.
 
 `corpus_tests.nv` is novo-vte's own parser suite, case by case. Those
 tests assert what a grid of cells looked like after a sequence, because
-novo-vte's parser changes a grid as it reads; this package has no grid,
-so each case is asserted at the layer it actually tested — the dispatch
-that came out and the parameters it came with. Beside them the file
-walks every state the parser publishes and produces every refusal from
-the limit it belongs to.
+novo-vte's parser changes a grid as it reads. This package has no grid,
+so each case is asserted at the layer it tested. That layer is the
+dispatch that came out and the parameters it came with. Beside them the
+file walks every state the parser publishes and produces every refusal
+from the limit it belongs to.
 
 `writer_tests.nv` asserts the exact bytes of every sequence this package
 writes. Where a sequence can also be read, it is fed back through this
@@ -372,21 +363,6 @@ region excused. `novo test --cov` measures one file at a time, so
 `scripts/coverage.py` merges the per-file reports and prints the total.
 
 No test opens a descriptor or writes anything.
-
-## Implementation status
-
-Everything the package declares has a body. The table says what each
-module does and what it deliberately leaves to the caller.
-
-| Module | Implemented | Not implemented, on purpose |
-| --- | --- | --- |
-| `vtparse` | The whole state machine: twelve states, colon sub-parameters, the private marker, UTF-8 in the ground state, OSC and DCS payloads, both string terminators, and a refusal for every limit. | The 8-bit forms of the control characters. See rule 15. |
-| `sgr` | The attribute model, the fold of a parameter list onto it in both the semicolon and the colon spelling, the shortest transition between two sets of attributes, the 240 palette colours the specification fixes, and the reduction to 256 or 16 colours. | The sixteen colours a user's theme owns. See rule 13. |
-| `seqwrite` | Every named sequence, text, OSC strings, and three escape hatches. | Nothing. |
-| `vtquery` | Six queries, six replies, both directions, and the matching of a reply to the query it answers. | The queries whose reply is a free-form string. `seqwrite.csi` is how those are asked. |
-
-Two functions were added in 0.1.0 beside published ones that could not
-express a colon group, and the published ones still work: see rule 14.
 
 ## Licence
 

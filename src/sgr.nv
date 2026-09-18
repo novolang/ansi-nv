@@ -1,31 +1,30 @@
 // sgr.nv — what a cell looks like, and the arithmetic that turns a
 // `CSI m` into it and back.
 //
-// Every body here is a `todo()`; the signatures are the design.
+// SGR is the one part of the escape-sequence layer that is a model
+// rather than a command.  `CSI 1 m` does not do anything, it changes
+// what the next character will look like.  This module is therefore a
+// struct of what a cell can be, a fold of parameters onto it, and the
+// inverse of that fold.  The inverse is the half most implementations
+// leave out.  Given the attributes a terminal is currently in and the
+// ones it should be in, it answers the shortest parameter list that
+// gets there.  A renderer that emits a full reset before every cell
+// works and is four times the bytes.
 //
-// SGR is the one part of the escape-sequence layer that is a MODEL
-// rather than a command: `CSI 1 m` does not do anything, it changes
-// what the next character will look like.  So this module is a struct
-// of what a cell can be, a fold of parameters onto it, and — the half
-// most implementations leave out — the inverse: given the attributes a
-// terminal is currently in and the ones it should be in, the shortest
-// parameter list that gets there.  A renderer that emits a full reset
-// before every cell works and is four times the bytes.
+// The three colour forms are one type.  `AnsiColor` covers the 16 named
+// colours as indices 0..15, the 256-colour cube, 24-bit RGB, and
+// whatever the terminal's default is.  A cell holds exactly one of the
+// four, and code that branched on which form it was would branch in
+// every function that touches a colour.  What differs between the forms
+// is how they serialise, which is `color_params`' question and nobody
+// else's.
 //
-// THE THREE COLOUR FORMS ARE ONE TYPE.  `AnsiColor` covers the 16
-// named colours (as indices 0..15), the 256-colour cube, 24-bit RGB
-// and "whatever the terminal's default is", because a cell holds
-// exactly one of the four and code that branched on which form it was
-// would branch in every function that touches a colour.  What differs
-// between the forms is only how they SERIALISE, which is
-// `color_params`' problem and nobody else's.
-//
-// WHAT IS DELIBERATELY NOT HERE.  A palette.  Indices 0..15 are the
-// terminal's own sixteen and no library can know what they are — a
-// user's theme decides — so `indexed_to_rgb` answers for 16..255,
-// where the values are fixed by the specification, and returns `None`
-// below that.  A caller that wants the low sixteen supplies them; that
-// is a configuration, not arithmetic.
+// A palette is deliberately not here.  Indices 0..15 are the terminal's
+// own sixteen and no library can know what they are, because a user's
+// theme decides.  `indexed_to_rgb` therefore answers for 16..255, where
+// the values are fixed by the specification, and answers `None` below
+// that.  A caller that wants the low sixteen supplies them, which is a
+// configuration rather than arithmetic.
 
 use vtparse
 
@@ -36,10 +35,10 @@ use vtparse
 // field and separating them would make every consumer join them back
 // up.
 pub enum AnsiColor
-    // Whatever the terminal was configured with — SGR 39, 49 and 59.
-    // Not a colour this package can name, which is the point: a
-    // renderer that resolved it to a concrete RGB would stop tracking
-    // a theme change.
+    // Whatever the terminal was configured with, which is SGR 39, 49
+    // and 59.  It is not a colour this package can name.  A renderer
+    // that resolved it to a concrete RGB would stop tracking a theme
+    // change.
     AnsiDefaultColor
     // A palette index, 0..255.  0..7 are the named colours, 8..15
     // their bright forms, 16..231 the 6x6x6 cube, 232..255 the greys.
@@ -49,18 +48,19 @@ pub enum AnsiColor
 
 // SgrUnderline is which of the underline styles a cell carries.
 //
-// A separate type from the boolean flags because the five styles are
-// mutually exclusive — SGR `4:3` replaces `4:1` rather than adding to
-// it — and because a `Bool` here is what makes a terminal draw a
-// straight line under a spelling mistake.
+// It is a separate type from the boolean flags because the five styles
+// are mutually exclusive.  SGR `4:3` replaces `4:1` rather than adding
+// to it, and a `Bool` here is what makes a terminal draw a straight
+// line under a spelling mistake.
 pub enum SgrUnderline
     SgrNoUnderline
     // SGR 4, or 4:1.
     SgrSingleUnderline
-    // SGR 21, or 4:2.  The overload of 21 with "bold off" is why 4:2
-    // exists, and why this package emits 4:2.
+    // SGR 21, or 4:2.  21 is also read as "bold off" by some
+    // terminals, which is why 4:2 exists and why this package emits
+    // 4:2.
     SgrDoubleUnderline
-    // SGR 4:3 — what a spell checker uses.
+    // SGR 4:3.  What a spell checker uses.
     SgrCurlyUnderline
     // SGR 4:4.
     SgrDottedUnderline
@@ -69,8 +69,8 @@ pub enum SgrUnderline
 
 // SgrRgb is a colour resolved to its three channels.
 //
-// The return of `indexed_to_rgb`, and nothing else uses it — a cell
-// holds an `AnsiColor`, not this.
+// The return of `indexed_to_rgb`, and nothing else uses it.  A cell
+// holds an `AnsiColor` rather than this.
 pub struct SgrRgb
     r: Int
     g: Int
@@ -78,18 +78,18 @@ pub struct SgrRgb
 
 // SgrAttrs is everything SGR can say about one cell.
 //
-// A flat struct of flags rather than a packed integer, and that is a
-// deliberate trade the reader should see: novo-vte packs the same
-// information into two 64-bit words and pays for it in every accessor,
-// which is right for a grid of a hundred thousand cells and wrong for
-// a published interface where the field name is the documentation.  A
-// consumer that needs the packing writes it over this.
+// A flat struct of flags rather than a packed integer.  novo-vte packs
+// the same information into two 64-bit words and pays for it in every
+// accessor, which is right for a grid of a hundred thousand cells and
+// wrong for a published surface where the field name is the
+// documentation.  A consumer that needs the packing writes it over
+// this.
 pub struct SgrAttrs
     fg: AnsiColor
     bg: AnsiColor
-    // SGR 58 / 59 — the colour of the underline, independent of the
-    // foreground.  Terminals that do not support it ignore it, which
-    // is why it is a colour rather than an option.
+    // SGR 58 and 59.  The colour of the underline, independent of the
+    // foreground.  Terminals that do not support it ignore it, which is
+    // why it is a colour rather than an option.
     underline_color: AnsiColor
     // SGR 1.  Separate from `dim`, because SGR 22 clears both and 1
     // and 2 can both be set.
@@ -99,15 +99,15 @@ pub struct SgrAttrs
     // SGR 3.
     italic: Bool
     underline: SgrUnderline
-    // SGR 5 and 6 folded into one flag: no terminal in use
-    // distinguishes slow from rapid blink, and a program that asked
-    // for rapid got slow.
+    // SGR 5 and 6 folded into one flag.  No terminal in use
+    // distinguishes slow from rapid blink, and a program that asked for
+    // rapid got slow.
     blink: Bool
-    // SGR 7 — swap foreground and background at draw time.  Kept as a
-    // flag rather than applied to the two colours, because SGR 27
+    // SGR 7.  Swap foreground and background at draw time.  It is kept
+    // as a flag rather than applied to the two colours, because SGR 27
     // has to be able to undo it.
     inverse: Bool
-    // SGR 8 — drawn as the background colour.
+    // SGR 8.  Drawn as the background colour.
     hidden: Bool
     // SGR 9.
     strike: Bool
@@ -116,12 +116,12 @@ pub struct SgrAttrs
 
 // ── Building an attribute set ───────────────────────────────────────
 //
-// One setter per field, each returning a FRESH literal.  Assigning a
+// One setter per field, and each returns a fresh literal.  Assigning a
 // field of a copy would write through to the caller's `SgrAttrs` on
-// this toolchain (novo bug lang/struct-field-assignment-aliases-the-
-// caller, filed 2026-09-18 from this package), and a renderer whose
-// "previous style" quietly became the new one would emit no
-// transitions at all.
+// this toolchain (novo bug
+// lang/struct-field-assignment-aliases-the-caller), and a renderer
+// whose previous style became the new one would emit no transitions at
+// all.
 
 fn set_fg(a: SgrAttrs, c: AnsiColor) -> SgrAttrs
     SgrAttrs { fg: c, bg: a.bg, underline_color: a.underline_color, bold: a.bold,
@@ -204,7 +204,8 @@ fn clamp_byte(n: Int) -> Int
     else
         n
 
-// The six levels of the 6x6x6 cube: 0, then 95 and up in steps of 40.
+// The six levels of the 6x6x6 cube.  They are 0, then 95 and up in
+// steps of 40.
 fn cube_level(n: Int) -> Int
     if n == 0
         0
@@ -213,8 +214,8 @@ fn cube_level(n: Int) -> Int
 
 // The RGB behind a palette index at or above 16, without the optional.
 //
-// `indexed_to_rgb` is this with the range check in front of it, and
-// `nearest_index` and `downgrade` call this directly — so neither of
+// `indexed_to_rgb` is this with the range check in front of it.
+// `nearest_index` and `downgrade` call this directly, so neither of
 // them carries a `None` arm that no argument can reach.
 fn cube_rgb(index: Int) -> SgrRgb
     if index < 232
@@ -227,12 +228,11 @@ fn cube_rgb(index: Int) -> SgrRgb
 // The nearest of the sixteen a terminal owns, by the classic three
 // bits plus a brightness bit.
 //
-// NOT A PALETTE LOOKUP, and it cannot be one: indices 0..15 are the
-// user's theme and no library knows their RGB (see the note at the top
-// of this file).  What it knows is what the bits MEAN — bit 0 red,
-// bit 1 green, bit 2 blue, bit 3 bright — so the answer is derived
-// from the channel values rather than matched against colours this
-// package would have to invent.
+// It is not a palette lookup and cannot be one, because indices 0..15
+// are the user's theme and no library knows their RGB.  What it knows
+// is what the bits mean.  Bit 0 is red, bit 1 green, bit 2 blue and
+// bit 3 bright, so the answer is derived from the channel values rather
+// than matched against colours this package would have to invent.
 fn basic_index(r: Int, g: Int, b: Int) -> Int
     var n = 0
     if r >= 128
@@ -246,8 +246,8 @@ fn basic_index(r: Int, g: Int, b: Int) -> Int
     n
 
 // The style a `4:<n>` sub-parameter names.  An unknown one is a plain
-// underline rather than nothing: a terminal that grows a sixth style
-// should still be underlined by a program that has not heard of it.
+// underline rather than nothing, so that a terminal which grows a sixth
+// style is still underlined by a program that has not heard of it.
 fn underline_of(n: Int) -> SgrUnderline
     if n == 0
         SgrNoUnderline
@@ -275,19 +275,18 @@ fn underline_sub(u: SgrUnderline) -> Int
 
 // ── Building a parameter list with its colon groups ─────────────────
 //
-// `sgr_transition` and `sgr_full` are published as `[Int]`, which is a
-// list of SEMICOLON-separated parameters and has nowhere to put a
-// colon.  Three of the five underline styles — curly, dotted and
-// dashed — exist only in the colon form (ITU-T T.416 § 13.1.8, as
-// xterm and kitty spell it), so the flat answer cannot carry them.
+// `sgr_transition` and `sgr_full` answer `[Int]`, which is a list of
+// semicolon-separated parameters and has nowhere to put a colon.  Three
+// of the five underline styles exist only in the colon form, as ITU-T
+// T.416 § 13.1.8 defines it and xterm and kitty spell it.  They are
+// curly, dotted and dashed, and the flat answer cannot carry them.
 //
-// The two functions therefore build an `AnsiParams` — the parser's own
-// flat values-and-groups pair — and the published `[Int]` pair is that
-// FLATTENED: one entry per group, its first value.  A group that was
-// `4:3` flattens to `4`, a plain underline, which is what a terminal
-// without the extension would have drawn anyway.  `sgr_transition_sub`
-// and `sgr_full_sub` are the unflattened answers, added in 0.1.0
-// beside the published pair rather than in place of it, and
+// The two functions therefore build an `AnsiParams`, which is the
+// parser's own flat values-and-groups pair, and the `[Int]` pair is
+// that flattened to one entry per group and its first value.  A group
+// that was `4:3` flattens to `4`, a plain underline, which is what a
+// terminal without the extension would have drawn.  `sgr_transition_sub`
+// and `sgr_full_sub` are the unflattened answers, and
 // `seqwrite.csi_params` is what puts one on the wire.
 
 // One parameter with no sub-parameters.
@@ -308,7 +307,8 @@ fn many(values: [Int], groups: [Int], vs: [Int]) -> ([Int], [Int])
         acc_g = ng
     (acc_v, acc_g)
 
-// One parameter carrying one sub-parameter — `4:3` and its family.
+// One parameter carrying one sub-parameter, as in `4:3` and its
+// family.
 fn one_sub(values: [Int], groups: [Int], v: Int, sub: Int) -> ([Int], [Int])
     let (nv, ng) = one(values, groups, v)
     let g = list.get(ng, list.len(ng) - 1)
@@ -322,11 +322,12 @@ fn underline_params(values: [Int], groups: [Int], u: SgrUnderline) -> ([Int], [I
         SgrSingleUnderline => one(values, groups, 4)
         _                  => one_sub(values, groups, 4, sub)
 
-// One entry per group: what the published `[Int]` shape can hold.
-// An explicit loop rather than `list.map` over `list.range`, which
-// would be the shorter spelling and would cost this package the `wasm`
-// tier: `list.range` is refused there, and a terminal emulator in a
-// browser is exactly the reader this package is `core` for.
+// One entry per group, which is what the `[Int]` shape can hold.
+//
+// An explicit loop rather than `list.map` over `list.range`.  The
+// shorter spelling would stop this package building for wasm, because
+// `list.range` is refused there, and a terminal emulator in a browser
+// is a reader this package is `core` for.
 fn flatten(ps: vtparse.AnsiParams) -> [Int]
     var out: [Int] = []
     for i in 0..vtparse.params_count(ps)
@@ -397,8 +398,8 @@ fn full_params(a: SgrAttrs) -> vtparse.AnsiParams
 fn step_params(from: SgrAttrs, to: SgrAttrs) -> vtparse.AnsiParams
     var v: [Int] = []
     var g: [Int] = []
-    // 22 clears bold AND dim, so a clear of either is one parameter
-    // plus whichever of the two survives it.
+    // 22 clears bold and dim together, so a clear of either is one
+    // parameter plus whichever of the two survives it.
     if from.bold and to.bold == false or from.dim and to.dim == false
         let (v1, g1) = one(v, g, 22)
         v = v1
@@ -510,7 +511,7 @@ fn with_role_color(a: SgrAttrs, code: Int, c: AnsiColor) -> SgrAttrs
     else
         set_underline_color(a, c)
 
-// `38:5:N` / `38:2::R:G:B` — the whole colour inside one parameter.
+// `38:5:N` and `38:2::R:G:B`, the whole colour inside one parameter.
 fn read_colon_color(params: vtparse.AnsiParams, at: Int) -> ?SgrColorRead
     let n = vtparse.params_sub_count(params, at)
     let space = vtparse.params_sub_at(params, at, 1, 0 - 1)
@@ -532,7 +533,8 @@ fn read_colon_color(params: vtparse.AnsiParams, at: Int) -> ?SgrColorRead
     else
         None
 
-// `38;5;N` / `38;2;R;G;B` — the colour spread over several parameters.
+// `38;5;N` and `38;2;R;G;B`, the colour spread over several
+// parameters.
 fn read_semi_color(params: vtparse.AnsiParams, at: Int) -> ?SgrColorRead
     let n = vtparse.params_count(params)
     let space = vtparse.params_at(params, at + 1, 0 - 1)
@@ -548,7 +550,7 @@ fn read_semi_color(params: vtparse.AnsiParams, at: Int) -> ?SgrColorRead
         None
 
 // attrs_default is a cell with the terminal's own colours and no
-// styling — what SGR 0 resets to.
+// styling, which is what SGR 0 resets to.
 pub fn attrs_default() -> SgrAttrs
     SgrAttrs { fg: AnsiDefaultColor, bg: AnsiDefaultColor,
                underline_color: AnsiDefaultColor, bold: false, dim: false, italic: false,
@@ -557,9 +559,9 @@ pub fn attrs_default() -> SgrAttrs
 
 // attrs_eq says whether two attribute sets would render identically.
 //
-// Used by a renderer to decide whether a cell needs a transition at
-// all, which is the single largest saving in a screen update: most
-// runs of cells share their attributes.
+// A renderer calls it to decide whether a cell needs a transition at
+// all, which is the largest saving in a screen update.  Most runs of
+// cells share their attributes.
 pub fn attrs_eq(a: SgrAttrs, b: SgrAttrs) -> Bool
     a == b
 
@@ -567,14 +569,14 @@ pub fn attrs_eq(a: SgrAttrs, b: SgrAttrs) -> Bool
 // set.
 //
 // The parameter list is taken as one value rather than one number at a
-// time because SGR is not a list of independent settings: 38 and 48
+// time, because SGR is not a list of independent settings.  38 and 48
 // consume the parameters after them, in either the semicolon form
-// (`38;2;R;G;B`) or the colon form (`38:2::R:G:B`), and a fold that
-// saw one number at a time could not tell a colour's blue channel
-// from a request for italics.
+// `38;2;R;G;B` or the colon form `38:2::R:G:B`, and a fold that saw one
+// number at a time could not tell a colour's blue channel from a
+// request for italics.
 //
-// An empty parameter list means SGR 0 — `CSI m` is a reset — which is
-// the case a `for` loop over an empty list gets wrong.
+// An empty parameter list means SGR 0, because `CSI m` is a reset.
+// That is the case a `for` loop over an empty list gets wrong.
 //
 // ```novo
 // use vtparse
@@ -593,10 +595,10 @@ pub fn apply_sgr(a: SgrAttrs, params: vtparse.AnsiParams) -> SgrAttrs
         attrs_default()
     else
         var acc = a
-        // How many parameters after this one the last colour swallowed.
-        // 38, 48 and 58 take what follows them, so a walk that read one
-        // number at a time could not tell a blue channel from a request
-        // for italics.
+        // How many parameters after this one the last colour took.
+        // 38, 48 and 58 consume what follows them, so a walk that read
+        // one number at a time could not tell a blue channel from a
+        // request for italics.
         var eaten = 0
         for i in 0..n
             if eaten > 0
@@ -622,8 +624,8 @@ pub fn apply_sgr(a: SgrAttrs, params: vtparse.AnsiParams) -> SgrAttrs
 //
 // For a caller that has its own parameter walk and only wants the
 // meaning of a single number.  It cannot express 38, 48 or 58, which
-// consume what follows them — those return the attributes unchanged,
-// and `apply_sgr` is the entry point that handles them.
+// consume what follows them.  Those three answer the attributes
+// unchanged, and `apply_sgr` is the entry point that handles them.
 pub fn apply_sgr_one(a: SgrAttrs, code: Int) -> SgrAttrs
     if code == 0
         attrs_default()
@@ -683,9 +685,9 @@ pub fn apply_sgr_one(a: SgrAttrs, code: Int) -> SgrAttrs
 // SgrColorRead is a colour read out of a parameter list, and how many
 // parameters it took.
 //
-// The count is the whole reason this is a struct: `38;2;1;2;3` and
+// The count is the reason this is a struct.  `38;2;1;2;3` and
 // `38:2::1:2:3` are the same colour and consume a different number of
-// parameters, and a caller that assumed either would mis-read the rest
+// parameters, so a caller that assumed either would mis-read the rest
 // of the sequence.
 pub struct SgrColorRead
     color: AnsiColor
@@ -697,10 +699,10 @@ pub struct SgrColorRead
 // parameter `at`.
 //
 // `None` when the parameters at that position are not an extended
-// colour — a truncated `38;2;1` or an unknown colour space.  Both
-// spellings are accepted: the semicolon form xterm shipped and the
-// colon form ITU-T T.416 defines, including the empty colour-space
-// slot in `38:2::R:G:B`.
+// colour, such as a truncated `38;2;1` or an unknown colour space.
+// Both spellings are accepted.  They are the semicolon form xterm
+// shipped and the colon form ITU-T T.416 defines, including the empty
+// colour-space slot in `38:2::R:G:B`.
 pub fn read_extended_color(params: vtparse.AnsiParams, at: Int) -> ?SgrColorRead
     let code = vtparse.params_at(params, at, 0)
     if code != 38 and code != 48 and code != 58
@@ -714,14 +716,13 @@ pub fn read_extended_color(params: vtparse.AnsiParams, at: Int) -> ?SgrColorRead
 // from one attribute set to another.
 //
 // The half of SGR that makes a screen update cheap, and the half most
-// implementations skip.  It emits a reset only when one is genuinely
-// shorter than the individual clears — turning off bold, italic and a
-// colour is three parameters, and a reset plus the four that survive
-// is five.
+// implementations skip.  It emits a reset only when one is shorter than
+// the individual clears.  Turning off bold, italic and a colour is
+// three parameters, and a reset plus the four that survive is five.
 //
-// Returns the parameters, not the bytes: `seqwrite.sgr` puts them on
-// the wire, and a caller that is building its own sequence may want
-// the numbers.
+// It answers the parameters rather than the bytes.  `seqwrite.sgr` puts
+// them on the wire, and a caller building its own sequence may want the
+// numbers.
 pub fn sgr_transition(from: SgrAttrs, to: SgrAttrs) -> [Int]
     flatten(sgr_transition_sub(from, to))
 
@@ -735,14 +736,13 @@ pub fn sgr_full(a: SgrAttrs) -> [Int]
 
 // sgr_transition_sub is `sgr_transition` with the colon groups intact.
 //
-// ADDED IN 0.1.0, BESIDE THE PUBLISHED `sgr_transition` RATHER THAN IN
-// PLACE OF IT.  `[Int]` is a list of semicolon-separated parameters,
-// and three of the five underline styles — curly, dotted and dashed —
-// have no spelling without a colon (ITU-T T.416 § 13.1.8), so the
-// published shape cannot express them.  This answers the parser's own
-// `AnsiParams`, whose flat values-and-groups pair can, and
-// `seqwrite.csi_params` writes it.  `sgr_transition` is this
-// flattened: one entry per group, so a `4:3` becomes a plain `4`.
+// `[Int]` is a list of semicolon-separated parameters, and three of the
+// five underline styles have no spelling without a colon (ITU-T T.416
+// § 13.1.8).  They are curly, dotted and dashed, so the flat shape
+// cannot express them.  This answers the parser's own `AnsiParams`,
+// whose flat values-and-groups pair can, and `seqwrite.csi_params`
+// writes it.  `sgr_transition` is this flattened to one entry per
+// group, so a `4:3` becomes a plain `4`.
 //
 // ```novo
 // use sgr
@@ -767,17 +767,17 @@ pub fn sgr_transition_sub(from: SgrAttrs, to: SgrAttrs) -> vtparse.AnsiParams
 
 // sgr_full_sub is `sgr_full` with the colon groups intact.
 //
-// The same 0.1.0 addition as `sgr_transition_sub`, for the same
-// reason, and `sgr_full` is this flattened.
+// It stands beside `sgr_full` for the reason `sgr_transition_sub`
+// stands beside `sgr_transition`, and `sgr_full` is this flattened.
 pub fn sgr_full_sub(a: SgrAttrs) -> vtparse.AnsiParams
     full_params(a)
 
 // color_params is the parameters one colour serialises to, in the
 // given role.
 //
-// `is_background` picks between the 3x/4x families, and the underline
-// colour has a family of its own (58/59) — three roles, one function,
-// because the three differ by a constant.
+// `is_background` picks between the 3x and 4x families, and the
+// underline colour has a family of its own in 58 and 59.  The three
+// roles share one function because they differ by a constant.
 pub fn color_params(c: AnsiColor, is_background: Bool, is_underline: Bool) -> [Int]
     let extended = if is_underline
         58
@@ -813,12 +813,11 @@ pub fn color_params(c: AnsiColor, is_background: Bool, is_underline: Bool) -> [I
 // indexed_to_rgb is the RGB a palette index above 15 stands for.
 //
 // `None` for 0..15 and for anything outside 0..255.  The low sixteen
-// are the terminal's own and a library cannot know them; 16..231 are
-// the 6x6x6 cube with the levels 0, 95, 135, 175, 215, 255, and
+// are the terminal's own and a library cannot know them.  16..231 are
+// the 6x6x6 cube with the levels 0, 95, 135, 175, 215 and 255, and
 // 232..255 are the 24 greys from 8 to 238 in steps of 10.  Those two
-// tables are fixed by the specification, which is the whole of why
-// this function can exist and the reason the low sixteen are not part
-// of it.
+// tables are fixed by the specification, which is why this function can
+// exist and why the low sixteen are not part of it.
 pub fn indexed_to_rgb(index: Int) -> ?SgrRgb
     if index < 16 or index > 255
         None
@@ -830,9 +829,9 @@ pub fn indexed_to_rgb(index: Int) -> ?SgrRgb
 //
 // For a renderer that has 24-bit colours and a terminal that has 256.
 // It searches the cube and the greys and takes whichever is closer in
-// squared distance, which is what every terminal multiplexer does and
-// what makes a downgraded colour look like the colour rather than like
-// a neighbour.
+// squared distance.  That is what every terminal multiplexer does, and
+// it is what makes a downgraded colour look like the colour rather than
+// like a neighbour.
 pub fn nearest_index(c: SgrRgb) -> Int
     var best = 16
     var best_d = 0 - 1
@@ -850,11 +849,12 @@ pub fn nearest_index(c: SgrRgb) -> Int
 // downgrade reduces a colour to what a terminal of the given depth can
 // show.
 //
-// The three depths are the three answers `TERM` and `COLORTERM` give,
-// and asking for one this terminal cannot render is how a program ends
-// up printing the parameters as text on a terminal that ignored them.
-// Which depth is available is a `host` question — the environment —
-// and the answer arrives here as an argument.
+// The three depths are the three answers `TERM` and `COLORTERM` give.
+// Asking for one this terminal cannot render is how a program ends up
+// printing the parameters as text on a terminal that ignored them.
+// Which depth is available is a question about the environment, which a
+// `core` package may not read, so the answer arrives here as an
+// argument.
 pub fn downgrade(c: AnsiColor, depth: SgrDepth) -> AnsiColor
     match depth
         SgrNoColor   => AnsiDefaultColor
@@ -878,7 +878,7 @@ pub fn downgrade(c: AnsiColor, depth: SgrDepth) -> AnsiColor
 // SgrDepth is how many colours the terminal on the other end can
 // actually show.
 pub enum SgrDepth
-    // No colour at all: every colour becomes `AnsiDefaultColor`, and
+    // No colour at all.  Every colour becomes `AnsiDefaultColor`, and
     // `inverse` is what is left to distinguish anything with.
     SgrNoColor
     // The named sixteen.
