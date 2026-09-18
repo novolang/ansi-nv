@@ -242,9 +242,8 @@ byte for byte. Rule 14 below says which sequences need it.
 
 ## Running on a microcontroller
 
-No module of this package builds for a device with no heap allocator.
-The compiler checks that on every build, and version 0.1.1 does not
-pass it.
+No module of this package builds for a device with no heap allocator,
+and the next paragraph says what stands in the way.
 
 A device with no heap allocator may not use a container that grows.
 Three fields of `AnsiParser` are lists, which grow. They are the
