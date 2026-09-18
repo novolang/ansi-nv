@@ -429,13 +429,10 @@ fn test_a_dcs_reports_its_parameters_and_its_payload() [io]
     for b in run
         let step = vtparse.feed_byte(p, b)
         p = step.parser
-        match step.action
-            AnsiDcsStart(f) =>
-                seen_final = f
-                seen_param = vtparse.param_at(step.parser, 0, 0)
-                seen_intermediate = vtparse.intermediate_at(step.parser, 0)
-            _               =>
-                seen_final = seen_final
+        if kind_of(step.action) == 8
+            seen_final = final_of(step.action)
+            seen_param = vtparse.param_at(step.parser, 0, 0)
+            seen_intermediate = vtparse.intermediate_at(step.parser, 0)
     test.assert(seen_final == 0x71)
 
     test.case("and its parameters and intermediates ride on the parser")
@@ -457,13 +454,10 @@ fn test_a_dcs_reports_its_parameters_and_its_payload() [io]
     for b in [0x1B, 0x50, 0x3F, 0x31, 0x3B, 0x32, 0x3A, 0x33, 0x7C]
         let step = vtparse.feed_byte(q, b)
         q = step.parser
-        match step.action
-            AnsiDcsStart(_) =>
-                marker = vtparse.private_marker_of(step.parser)
-                second = vtparse.param_at(step.parser, 1, 0)
-                subs = vtparse.sub_count(step.parser, 1)
-            _               =>
-                marker = marker
+        if kind_of(step.action) == 8
+            marker = vtparse.private_marker_of(step.parser)
+            second = vtparse.param_at(step.parser, 1, 0)
+            subs = vtparse.sub_count(step.parser, 1)
     test.assert(marker == 0x3F)
     test.assert(second == 2)
     test.assert(subs == 2)

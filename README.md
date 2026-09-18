@@ -248,35 +248,32 @@ byte for byte. Rule 14 below says which sequences need it.
 
 novo-lang lets a package state which of its modules can run on a device
 with no heap allocator, and the compiler checks that claim on every
-build. Here the claim covers the whole package: there is no host-only
-half, because nothing in it performs input or output. A device driving a
-serial console over UART is the audience.
+build. **This package makes no such claim in version 0.1.0, and the
+reason is worth stating plainly.**
 
-```bash
-novo build --target=nrf52-qemu tests/embedded_probe.nv
-```
+A device with no heap allocator may not use a container that grows.
+Three fields of `AnsiParser` — the parameters, their groups and the
+intermediate bytes — are lists, which grow. The compiler also stores a
+structure on the stack only when every one of its fields is a fixed-size
+value, so a structure with a list field lives on the heap: feeding one
+byte allocates two of them, the parser that comes back and the step that
+carries it.
 
-That command builds a Cortex-M4 executable today, and the probe names
-`vtparse`, `seqwrite`, `sgr` and `vtquery`.
+The 0.0.1 release shipped a program that built for an nRF52 board, and
+it built because every function was an unimplemented stub. With the
+functions written, it does not.
 
-**What links is the code; what does not fit yet is the storage.**
-`AnsiParser` keeps its parameters, its groups and its intermediates in
-`[Int]` fields, which are lists that grow. A list that grows is not what
-a device with no heap allocator wants, and it is also why feeding a byte
-costs two small heap allocations: novo-lang stores a struct with a list
-field on the heap, and `feed_byte` builds two of them, the parser it
-answers and the step that carries it. Reading a byte of ordinary text
-touches no list at all; a control sequence's parameters grow three.
-Those three fields have to become fixed-capacity buffers —
-[heapless-nv](https://novo-lang.org/packages/heapless-nv)'s — before the
-package runs on a device with no allocator, and changing them is a
-change every dependent sees, so it waits for the release that makes it.
-`tests/alloc_probe.nv` and `scripts/alloc_scan.py` are how the numbers
-above are read off the compiled output.
+What has to change is those three fields: a fixed-capacity buffer, of
+the kind [heapless-nv](https://novo-lang.org/packages/heapless-nv)
+provides, in place of each list. That changes a type every program using
+this package can see, so it is a release of its own rather than a patch.
+Nothing else in the package stands in the way: no function here reads a
+clock, opens a file or performs input or output of any kind.
 
-`strict_limits` is the configuration for this case. Its payload ceiling
-is 128 bytes, because an OSC 52 paste from the other end of the link is
-unbounded and a device has nowhere to put it.
+`tests/alloc_probe.nv` is a small program whose compiled output can be
+read for allocations, and `scripts/alloc_scan.py` prints one count per
+function. They are how the two allocations above were counted, and how
+a reader can check the number for themselves.
 
 ## What is not included
 
@@ -365,16 +362,11 @@ the limit it belongs to.
 writes. Where a sequence can also be read, it is fed back through this
 package's own parser and has to come out as what it was.
 
-Every line of `src/` is executed by the suites: 834 of 834, with no
+Every line of `src/` is executed by the suites: 824 of 824, with no
 region excused. `novo test --cov` measures one file at a time, so
 `scripts/coverage.py` merges the per-file reports and prints the total.
 
 No test opens a descriptor or writes anything.
-
-`tests/embedded_probe.nv` is the program that shows this package builds
-for a microcontroller with no heap allocator. It is compiled for the
-nRF52 target and either builds or does not. See "Running on a
-microcontroller".
 
 ## Implementation status
 

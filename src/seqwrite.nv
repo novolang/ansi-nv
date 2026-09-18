@@ -417,26 +417,27 @@ pub fn put_text(out: [u8], text: Str) -> [u8]
 pub fn put_text_safe(out: [u8], text: Str) -> [u8]
     var o = out
     let n = str.len(text)
-    var i = 0
-    while i < n
+    // True on the second byte of a C1 control, which the branch that
+    // wrote its stand-in has already read.
+    var consumed = false
+    for i in 0..n
         let b = str.byte_at_or(text, i, 0)
         let next = str.byte_at_or(text, i + 1, 0)
-        if b < 0x20
+        if consumed
+            consumed = false
+        else if b < 0x20
             // `^A` for 0x01, and `^[` for the ESC itself.
             o = put(put(o, 0x5E), 0x40 + b)
-            i = i + 1
         else if b == 0x7F
             o = put(put(o, 0x5E), 0x3F)
-            i = i + 1
         else if b == 0xC2 and i + 1 < n and next >= 0x80 and next <= 0x9F
             // A C1 control, which in UTF-8 is two bytes.  `~` rather
             // than `^` so that a reader can tell `ESC` from the 8-bit
             // CSI it stands in for.
             o = put(put(o, 0x7E), 0x40 + (next - 0x80))
-            i = i + 2
+            consumed = true
         else
             o = put(o, b)
-            i = i + 1
     o
 
 // ── Strings ─────────────────────────────────────────────────────────

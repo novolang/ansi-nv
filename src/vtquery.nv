@@ -153,17 +153,11 @@ fn setting_number(s: AnsiModeSetting) -> Int
 
 // Primary DA's options: every parameter after the terminal class.
 fn options_of(p: vtparse.AnsiParser) -> [Int]
-    var out: [Int] = []
-    for i in 1..vtparse.param_count(p)
-        out = list.push(out, vtparse.param_at(p, i, 0))
-    out
+    list.map(list.range(1, vtparse.param_count(p)), i => vtparse.param_at(p, i, 0))
 
 // The same, off a snapshot.
 fn options_of_params(ps: vtparse.AnsiParams) -> [Int]
-    var out: [Int] = []
-    for i in 1..vtparse.params_count(ps)
-        out = list.push(out, vtparse.params_at(ps, i, 0))
-    out
+    list.map(list.range(1, vtparse.params_count(ps)), i => vtparse.params_at(ps, i, 0))
 
 // Which of the six questions this is.
 fn query_kind(q: AnsiQuery) -> Int

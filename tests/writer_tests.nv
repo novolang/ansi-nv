@@ -38,6 +38,21 @@ fn same(out: [u8], expect: [Int]) -> Bool
 fn e() -> Int
     0x1B
 
+// The final byte of a CSI dispatch, or -1 for any other action.
+fn final_byte_of(a: vtparse.AnsiAction) -> Int
+    match a
+        AnsiCsiDispatch(f) => f
+        _                  => 0 - 1
+
+// Whether two reads of the same dispatch agree, and both found one.
+fn same_reply(a: ?vtquery.AnsiReply, b: ?vtquery.AnsiReply) -> Bool
+    match a
+        Some(x) =>
+            match b
+                Some(y) => x == y
+                None    => false
+        None    => false
+
 // The last step of feeding a written buffer back through the parser.
 fn reparse(out: [u8]) -> vtparse.AnsiStep
     var p = vtparse.parser_new()
@@ -311,11 +326,9 @@ fn test_an_osc_is_written_with_the_terminator_it_was_asked_for() [io]
     for b in seqwrite.clipboard_write([], "c", "QUJD")
         let step = vtparse.feed_byte(p, b as Int)
         p = step.parser
-        match step.action
-            AnsiOscPut(v) =>
-                acc = list.push(acc, v as u8)
-            _             =>
-                acc = acc
+        let payload = osc_byte_of(step.action)
+        if payload >= 0
+            acc = list.push(acc, payload as u8)
     match vtparse.osc_code(acc)
         Some(c) => test.assert(c == 52)
         None    => test.assert(false)
@@ -985,12 +998,9 @@ fn test_every_reply_writes_and_reads_back_as_itself() [io]
     var settings = 0
     for s in [0, 1, 2, 3, 4]
         let written = vtquery.write_reply([], AnsiModeReply(2026, setting_for(s)))
-        match read_back(written)
-            Some(AnsiModeReply(mode, setting)) =>
-                if mode == 2026 and setting_code(setting) == s
-                    settings = settings + 1
-            _                                  =>
-                settings = settings
+        let read = read_back(written)
+        if reply_mode_of(read) == 2026 and reply_setting_of(read) == s
+            settings = settings + 1
     test.assert(settings == 5)
 
     test.case("a setting number nobody defined reads back as unknown")
@@ -998,12 +1008,30 @@ fn test_every_reply_writes_and_reads_back_as_itself() [io]
         Some(AnsiModeReply(_, setting)) => test.assert(setting_code(setting) == 0)
         _                               => test.assert(false)
 
+// The byte an `AnsiOscPut` carried, or -1 for any other action.
+fn osc_byte_of(a: vtparse.AnsiAction) -> Int
+    match a
+        AnsiOscPut(v) => v
+        _             => 0 - 1
+
 // The reply a written buffer parses back into.
 fn read_back(out: [u8]) -> ?vtquery.AnsiReply
     let step = reparse(out)
     match step.action
         AnsiCsiDispatch(f) => vtquery.reply_of(step.parser, f)
         _                  => None
+
+// The mode a parsed DECRPM answer named, or -1 for anything else.
+fn reply_mode_of(r: ?vtquery.AnsiReply) -> Int
+    match r
+        Some(AnsiModeReply(mode, _)) => mode
+        _                            => 0 - 1
+
+// The setting it named, or -1.
+fn reply_setting_of(r: ?vtquery.AnsiReply) -> Int
+    match r
+        Some(AnsiModeReply(_, setting)) => setting_code(setting)
+        _                               => 0 - 1
 
 // The five DECRPM settings, by number.
 fn setting_for(n: Int) -> vtquery.AnsiModeSetting
@@ -1038,22 +1066,10 @@ fn test_a_reply_reads_the_same_off_a_snapshot_as_off_the_parser() [io]
     var agree = 0
     for out in written
         let step = reparse(out)
-        match step.action
-            AnsiCsiDispatch(f) =>
-                let from_parser = vtquery.reply_of(step.parser, f)
-                let from_snap = vtquery.reply_of_params(vtparse.params_of(step.parser), f)
-                match from_parser
-                    Some(a) =>
-                        match from_snap
-                            Some(b) =>
-                                if a == b
-                                    agree = agree + 1
-                            None    =>
-                                agree = agree
-                    None    =>
-                        agree = agree
-            _                  =>
-                agree = agree
+        let f = final_byte_of(step.action)
+        if f >= 0 and same_reply(vtquery.reply_of(step.parser, f),
+                                 vtquery.reply_of_params(vtparse.params_of(step.parser), f))
+            agree = agree + 1
 
     test.case("all six replies read the same both ways")
     test.assert(agree == 6)

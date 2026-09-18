@@ -117,7 +117,7 @@ Both of these asserted something no implementation could satisfy.
 ### Tests
 
 Five suites, 114 assertions' worth of cases, and every line of `src/`
-executed — 834 of 834, with no region excused by a marker.
+executed — 824 of 824, with no region excused by a marker.
 `tests/corpus_tests.nv` is novo-vte's own parser suite ported case by
 case, plus a walk through every state the parser publishes and one case
 per limit. `tests/writer_tests.nv` asserts the exact bytes of every
@@ -128,6 +128,17 @@ on toolchain 0.9.1.
 
 ### Known
 
+- **The device claim is withdrawn, and `tests/embedded_probe.nv` is
+  gone with it.** 0.0.1 shipped a probe that built for
+  `--target=nrf52-qemu`, and it built because every body was a
+  `todo()` — its own README said so, under "what links today is the
+  signatures, not the storage". With the bodies written it does not
+  build, and nothing in the package does: `@tier(embedded)` refuses a
+  list literal, `list.push`, `list.get` and a boxed struct literal, and
+  `AnsiParser` is a boxed struct with three list fields. Shipping a
+  probe that cannot pass would be worse than saying this, so the file
+  is removed and the README says what has to change. The change is the
+  one named below, and it is a release of its own.
 - **Feeding one byte allocates two refcounted boxes**, on every path
   including the ground state: the `AnsiParser` the step answers and the
   `AnsiStep` itself. novo-lang stores a struct on the stack only when

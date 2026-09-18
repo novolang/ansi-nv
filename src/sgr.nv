@@ -324,10 +324,7 @@ fn underline_params(values: [Int], groups: [Int], u: SgrUnderline) -> ([Int], [I
 
 // One entry per group: what the published `[Int]` shape can hold.
 fn flatten(ps: vtparse.AnsiParams) -> [Int]
-    var out: [Int] = []
-    for i in 0..vtparse.params_count(ps)
-        out = list.push(out, vtparse.params_at(ps, i, 0))
-    out
+    list.map(list.range(0, vtparse.params_count(ps)), i => vtparse.params_at(ps, i, 0))
 
 // The parameters that build `a` from a terminal in an unknown state.
 fn full_params(a: SgrAttrs) -> vtparse.AnsiParams
@@ -588,22 +585,28 @@ pub fn apply_sgr(a: SgrAttrs, params: vtparse.AnsiParams) -> SgrAttrs
         attrs_default()
     else
         var acc = a
-        var i = 0
-        while i < n
-            let code = vtparse.params_at(params, i, 0)
-            if code == 38 or code == 48 or code == 58
-                match read_extended_color(params, i)
-                    Some(read) =>
-                        acc = with_role_color(acc, code, read.color)
-                        i = i + read.consumed
-                    None       =>
-                        i = i + 1
-            else if code == 4 and vtparse.params_sub_count(params, i) > 1
-                acc = set_underline(acc, underline_of(vtparse.params_sub_at(params, i, 1, 1)))
-                i = i + 1
+        // How many parameters after this one the last colour swallowed.
+        // 38, 48 and 58 take what follows them, so a walk that read one
+        // number at a time could not tell a blue channel from a request
+        // for italics.
+        var eaten = 0
+        for i in 0..n
+            if eaten > 0
+                eaten = eaten - 1
             else
-                acc = apply_sgr_one(acc, code)
-                i = i + 1
+                let code = vtparse.params_at(params, i, 0)
+                if code == 38 or code == 48 or code == 58
+                    match read_extended_color(params, i)
+                        Some(read) =>
+                            acc = with_role_color(acc, code, read.color)
+                            eaten = read.consumed - 1
+                        None       =>
+                            eaten = 0
+                else if code == 4 and vtparse.params_sub_count(params, i) > 1
+                    acc = set_underline(acc,
+                                        underline_of(vtparse.params_sub_at(params, i, 1, 1)))
+                else
+                    acc = apply_sgr_one(acc, code)
         acc
 
 // apply_sgr_one folds one SGR number that takes no arguments onto an
