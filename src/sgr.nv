@@ -323,8 +323,16 @@ fn underline_params(values: [Int], groups: [Int], u: SgrUnderline) -> ([Int], [I
         _                  => one_sub(values, groups, 4, sub)
 
 // One entry per group: what the published `[Int]` shape can hold.
+// An explicit loop rather than `list.map` over `list.range`, which
+// would be the shorter spelling and would cost this package the `wasm`
+// tier: `list.range` is refused there, and a terminal emulator in a
+// browser is exactly the reader this package is `core` for.
 fn flatten(ps: vtparse.AnsiParams) -> [Int]
-    list.map(list.range(0, vtparse.params_count(ps)), i => vtparse.params_at(ps, i, 0))
+    var out: [Int] = []
+    for i in 0..vtparse.params_count(ps)
+        let v = vtparse.params_at(ps, i, 0)
+        out = list.push(out, v)
+    out
 
 // The parameters that build `a` from a terminal in an unknown state.
 fn full_params(a: SgrAttrs) -> vtparse.AnsiParams

@@ -117,7 +117,7 @@ Both of these asserted something no implementation could satisfy.
 ### Tests
 
 Five suites, 114 assertions' worth of cases, and every line of `src/`
-executed — 824 of 824, with no region excused by a marker.
+executed — 836 of 836, with no region excused by a marker.
 `tests/corpus_tests.nv` is novo-vte's own parser suite ported case by
 case, plus a walk through every state the parser publishes and one case
 per limit. `tests/writer_tests.nv` asserts the exact bytes of every

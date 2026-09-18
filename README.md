@@ -362,7 +362,7 @@ the limit it belongs to.
 writes. Where a sequence can also be read, it is fed back through this
 package's own parser and has to come out as what it was.
 
-Every line of `src/` is executed by the suites: 824 of 824, with no
+Every line of `src/` is executed by the suites: 836 of 836, with no
 region excused. `novo test --cov` measures one file at a time, so
 `scripts/coverage.py` merges the per-file reports and prints the total.
 

@@ -152,12 +152,22 @@ fn setting_number(s: AnsiModeSetting) -> Int
         AnsiModeAlwaysReset => 4
 
 // Primary DA's options: every parameter after the terminal class.
+// An explicit loop rather than `list.map` over `list.range`: the range
+// is refused at the `wasm` tier, and this package builds there.
 fn options_of(p: vtparse.AnsiParser) -> [Int]
-    list.map(list.range(1, vtparse.param_count(p)), i => vtparse.param_at(p, i, 0))
+    var out: [Int] = []
+    for i in 1..vtparse.param_count(p)
+        let v = vtparse.param_at(p, i, 0)
+        out = list.push(out, v)
+    out
 
 // The same, off a snapshot.
 fn options_of_params(ps: vtparse.AnsiParams) -> [Int]
-    list.map(list.range(1, vtparse.params_count(ps)), i => vtparse.params_at(ps, i, 0))
+    var out: [Int] = []
+    for i in 1..vtparse.params_count(ps)
+        let v = vtparse.params_at(ps, i, 0)
+        out = list.push(out, v)
+    out
 
 // Which of the six questions this is.
 fn query_kind(q: AnsiQuery) -> Int
