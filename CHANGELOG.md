@@ -119,6 +119,12 @@ the type every consumer holds has changed shape.
   parser in a local, 24.6 MB/s through this release with the value in a
   local, and 31.0 MB/s with the value in a `var` field.  The three
   answer the same checksum.
+- A consumer that nests the parser in a `@value` struct of its own
+  spells the field's type bare.  `p: vtcore.AnsiParser` is refused with
+  E2011 — "not in the v1 @value field set" — and `p: AnsiParser`, with
+  `use vtcore` in the file, is the same type and compiles.  A field of a
+  boxed struct takes either spelling.  Filed as novo bug
+  `types-values/module-qualified-value-type-refused-as-a-value-field`.
 - There is no pack and unpack pair, and there is nothing left for one to
   do.  It was asked for so that a program keeping its parser in an
   integer handle could put the parser's state into an array of integers
