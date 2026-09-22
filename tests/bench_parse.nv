@@ -1,0 +1,110 @@
+// tests/bench_parse.nv — what one byte costs, measured two ways on one
+// stream.
+//
+// This is not a test.  Run it and read the two numbers:
+//
+//   novo run tests/bench_parse.nv
+//
+// The stream is what a terminal actually carries: a cursor move, an SGR
+// change in the semicolon form, four runs of printable text, a reset,
+// a carriage return and line feed, and an OSC that sets the window
+// title.  Two hundred of those, fed a byte at a time.
+//
+// `AnsiParser` is a `@value` struct, so it is copied wherever it is
+// passed and wherever it is stored (SPEC section 14.5).  The two
+// measurements are the two shapes a consumer has.  `by_value` keeps the
+// parser in a local and rebinds it, which is one copy per byte.
+// `in_a_field` keeps it in a `var` field of a boxed struct, which is
+// what a consumer holding a parser behind a handle does, and is one
+// copy in and one copy out per byte.  The second is the faster of the
+// two on this toolchain.
+//
+// The numbers are printed rather than checked.  A throughput assertion
+// fails on a busy machine and says nothing about the package.
+
+use std.time
+use vtparse
+
+// One round of the sequences a terminal sends.
+//
+// A cursor move, a 24-bit foreground in the semicolon form,
+// forty-eight bytes of printable text, a reset, a carriage return and
+// line feed, and an OSC that sets the window title.
+fn round() -> [u8]
+    let text = [0x68 as u8, 0x65 as u8, 0x6C as u8, 0x6C as u8, 0x6F as u8,
+                0x20 as u8, 0x77 as u8, 0x6F as u8, 0x72 as u8, 0x6C as u8,
+                0x64 as u8, 0x21 as u8]
+    var out = [0x1B as u8, 0x5B as u8, 0x31 as u8, 0x3B as u8, 0x31 as u8,
+               0x48 as u8, 0x1B as u8, 0x5B as u8, 0x33 as u8, 0x38 as u8,
+               0x3B as u8, 0x32 as u8, 0x3B as u8, 0x31 as u8, 0x3B as u8,
+               0x32 as u8, 0x3B as u8, 0x33 as u8, 0x6D as u8]
+    for _ in 0..4
+        out = list.concat(out, text)
+    list.concat(out, [0x1B as u8, 0x5B as u8, 0x30 as u8, 0x6D as u8, 0x0D as u8,
+                      0x0A as u8, 0x1B as u8, 0x5D as u8, 0x30 as u8, 0x3B as u8,
+                      0x74 as u8, 0x69 as u8, 0x74 as u8, 0x6C as u8, 0x65 as u8,
+                      0x07 as u8])
+
+// Two hundred of those rounds, as one buffer.
+fn corpus() -> [u8]
+    let one = round()
+    var out: [u8] = []
+    for _ in 0..200
+        out = list.concat(out, one)
+    out
+
+// The action of one byte, folded into a running total so that the work
+// cannot be optimised away.
+fn scored(p: vtcore.AnsiParser) -> Int
+    let k = vtcore.action_kind(p)
+    if k == vtcore.ACT_PRINT or k == vtcore.ACT_CSI_DISPATCH
+            or k == vtcore.ACT_OSC_PUT
+        vtcore.action_arg(p)
+    else
+        1
+
+// The parser in a local, rebound on every byte.
+fn by_value(stream: [u8]) -> Int
+    var p = vtparse.parser_new()
+    var acc = 0
+    for b in stream
+        p = vtparse.feed(p, b as Int)
+        acc = acc + scored(p)
+    acc
+
+// The parser in a `var` field of a boxed struct, which is where a
+// consumer that hands out a handle keeps it.
+struct Handle
+    var parser: vtcore.AnsiParser
+
+fn in_a_field(stream: [u8]) -> Int
+    let h = Handle { parser: vtparse.parser_new() }
+    var acc = 0
+    for b in stream
+        h.parser = vtparse.feed(h.parser, b as Int)
+        acc = acc + scored(h.parser)
+    acc
+
+fn main() [io, time]
+    let stream = corpus()
+    let rounds = 20
+    let total = (list.len(stream) * rounds) as Float
+    var acc = 0
+
+    // One pass first, so that neither measurement pays for a cold page.
+    acc = acc + by_value(stream)
+    let t0 = time.now()
+    for _ in 0..rounds
+        acc = acc + by_value(stream)
+    let d0 = time.elapsed_since(t0)
+
+    acc = acc + in_a_field(stream)
+    let t1 = time.now()
+    for _ in 0..rounds
+        acc = acc + in_a_field(stream)
+    let d1 = time.elapsed_since(t1)
+
+    println("bytes        ${list.len(stream) * rounds}")
+    println("by value     ${total / d0 / 1000000.0} MB/s")
+    println("in a field   ${total / d1 / 1000000.0} MB/s")
+    println("checksum     ${acc}")

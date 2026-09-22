@@ -1,70 +1,80 @@
-// alloc_probe.nv — the program whose emitted LLVM is read for
-// `novo_alloc`, in crypto-nv's shape.
+// tests/alloc_probe.nv — a program that reaches every function of
+// `vtcore`, so the emitted LLVM can be read for a call to the
+// allocator.
 //
-// It is not a test.  Build it and read the IR.
+// This is not a test.  `tests/alloc_scan.sh` builds it with `--opt=0`
+// and reads the IR; `--opt=0` is what makes the check mean anything,
+// because at the default optimisation level the whole probe inlines
+// into `novo_main`, there is no function left to attribute an
+// allocation to, and an assertion that no function of `vtcore`
+// allocates would pass because no function of `vtcore` is there.
 //
-//   novo build --opt=0 tests/alloc_probe.nv -o /tmp/alloc_probe
-//   python3 scripts/alloc_scan.py
+// Every function is called, because a function the probe never reaches
+// is one the linker drops and the scan never sees.  The other three
+// modules are not here.  They allocate, which is what a `[u8]` of
+// written bytes and a parameter snapshot are.
 //
-// `--opt=0` is the point.  At the default level the whole thing inlines
-// into `novo_main`, there is nothing left to attribute an allocation
-// to, and an assertion that a path does not allocate would pass because
-// the path is no longer there.
-//
-// The scan does not answer nothing today.  Feeding one byte costs two
-// refcounted boxes on every path, the ground state included, and they
-// are one `AnsiParser` and one `AnsiStep`.  No list is touched, no
-// string is built and no parameter buffer grows until a CSI's
-// parameters arrive, at which point the three `[Int]` fields grow as
-// well.
-//
-// A `@value` struct lives on the stack and is not allocated at all
-// (SPEC § 14.4), and `AnsiParser` cannot be one.  `@value` fields are
-// restricted to scalars and other `@value` structs (§ 14.2), while
-// `AnsiParser.values`, `.groups` and `.intermediates` are `[Int]`.
-// `AnsiStep` carries an `AnsiParser`, so it is boxed for the same
-// reason.  Turning those three fields into heapless-nv's
-// fixed-capacity buffer makes both structs `@value` and leaves the feed
-// path allocating nothing.  It is a breaking change to a struct seven
-// packages depend on, so it waits for the release that makes it.
-//
-// The counts are printed rather than checked, because the suites own
+// The numbers are printed rather than checked; the suites own
 // correctness.  This one is here to be read as text.
 
-use vtparse
+use std.str
+use vtcore
 
-// The path the numbers are about, which is bytes that never open a
-// sequence.
-//
-// One `AnsiParser` goes in and one comes out, and the only thing that
-// changes is a handful of integer fields.  No list is touched on any
-// arm of this.
-fn ground_path(p: vtparse.AnsiParser, b: Int) -> Int
-    let step = vtparse.feed_byte(p, b)
-    match step.action
-        AnsiPrint(ch)  => ch
-        AnsiExecute(c) => c
-        AnsiNothing    => 0
-        AnsiRefused(_) => 0 - 1
-        _              => 0 - 2
+// A stream held the way firmware holds one.  A fixed inline array in a
+// `@value` struct is the one spelling that is not a list.
+@value
+struct ProbeBytes
+    b: [u8; 24]
 
-// The path that grows the parameter buffers.  It is here so that the
-// IR shows the difference between the two paths.
-fn param_path(p: vtparse.AnsiParser, b: Int) -> Int
-    let step = vtparse.feed_byte(p, b)
-    vtparse.param_at(step.parser, 0, 1)
+// `ESC [ 3 8 : 2 : : 1 : 2 : 3 m`, then `ESC ] 0 ; h i BEL`, then a
+// two-byte codepoint and a C0 control.  It reaches every state the
+// machine has but the two that consume a string it does not report.
+fn probe_bytes() -> ProbeBytes
+    ProbeBytes { b: [0x1B as u8, 0x5B as u8, 0x33 as u8, 0x38 as u8, 0x3A as u8,
+                     0x32 as u8, 0x3A as u8, 0x3A as u8, 0x31 as u8, 0x3A as u8,
+                     0x32 as u8, 0x3A as u8, 0x33 as u8, 0x6D as u8, 0x1B as u8,
+                     0x5D as u8, 0x30 as u8, 0x3B as u8, 0x68 as u8, 0x07 as u8,
+                     0xC3 as u8, 0xA9 as u8, 0x0A as u8, 0x41 as u8] }
+
+// The path the numbers are about: one byte in, one parser out, and
+// nothing on the heap.  Every state the machine rests in is reached by
+// the bytes above.
+fn feed_path() -> Int
+    let src = probe_bytes()
+    var p = vtcore.parser_with(vtcore.default_limits())
+    var score = 0
+    for i in 0..24
+        p = vtcore.feed(p, src.b[i] as Int)
+        score = score + vtcore.action_kind(p) + vtcore.action_arg(p)
+    score
+
+// The readers, which walk the parameter buffer a dispatch left behind.
+fn read_path() -> Int
+    let src = probe_bytes()
+    var p = vtcore.parser_new()
+    for i in 0..14
+        p = vtcore.feed(p, src.b[i] as Int)
+    var score = vtcore.param_count(p) + vtcore.param_at(p, 0, 1)
+    score = score + vtcore.sub_count(p, 0) + vtcore.sub_at(p, 0, 3, 0)
+    score = score + vtcore.intermediate_count(p) + vtcore.intermediate_at(p, 0)
+    score = score + vtcore.private_marker_of(p) + vtcore.state_code(p)
+    score = score + vtcore.limits_of(p).params_max as Int
+    if vtcore.is_settled(vtcore.reset(p))
+        score = score + 1
+    score
+
+// The states a string sequence and an escape with an intermediate
+// reach, and the two presets.
+fn tail_path() -> Int
+    var p = vtcore.parser_with(vtcore.strict_limits())
+    var score = 0
+    // `ESC P q a ESC \`, a device control string, and `ESC _ x ESC \`,
+    // one the package consumes without reporting.
+    for b in [0x1B, 0x50, 0x71, 0x61, 0x1B, 0x5C, 0x1B, 0x5F, 0x78, 0x1B, 0x5C,
+              0x1B, 0x28, 0x42, 0x1B, 0x5B, 0x3F, 0x31, 0x68, 0x7F, 0x80]
+        p = vtcore.feed(p, b)
+        score = score + vtcore.action_kind(p)
+    score
 
 fn main() [io]
-    var p = vtparse.parser_new()
-    var acc = 0
-    // Printable ASCII, a C0 control, and a three-byte codepoint fed a
-    // byte at a time, which is the whole ground-state path.
-    for b in [0x41, 0x0A, 0xE2, 0x82, 0xAC, 0x1B]
-        acc = acc + ground_path(p, b)
-        p = vtparse.feed_byte(p, b).parser
-    println("${acc}")
-    // And a parameter list, which grows three lists as well.
-    var q = vtparse.parser_new()
-    for b in [0x1B, 0x5B, 0x32, 0x3B, 0x31, 0x48]
-        q = vtparse.feed_byte(q, b).parser
-    println("${param_path(q, 0x41)}")
+    println(str.from_int(feed_path() + read_path() + tail_path()))

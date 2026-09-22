@@ -52,22 +52,25 @@ business. Nothing here performs input or output: incoming bytes are
 arguments, and outgoing sequences are appended to a `[u8]` the caller
 owns and writes itself.
 
-The parser is a value. `feed_byte` takes a parser and one byte and
-returns a new parser and one action. The action names the final byte and
-nothing else; the numbers the sequence came with stay on the parser that
-is returned with it, and are read back afterwards with `param_at` and
-its neighbours.
+The parser is a value that lives in the caller's stack frame. `feed`
+takes a parser and one byte and returns the parser after it. What the
+byte asked for is read off that parser with `action_of`, and so are the
+numbers the sequence came with, through `param_at` and its neighbours.
+Feeding a byte allocates nothing.
 
-Every ceiling the parser enforces is a number the caller sets, in an
-`AnsiLimits` value. Two are provided.
+The parser holds its parameters in buffers of a fixed size, so the
+package sets a capacity and the caller sets a ceiling inside it. A
+ceiling above the capacity is lowered to it, and `limits_of` answers
+what the parser is enforcing.
 
-| Limit | `default_limits` | `strict_limits` |
-| --- | --- | --- |
-| Parameters in one sequence | 32 | 8 |
-| Sub-parameters in one colon group | 6 | 4 |
-| Largest value one parameter may hold | 65535 | 4095 |
-| Intermediate bytes kept | 2 | 2 |
-| Bytes of OSC or DCS payload reported | 4096 | 128 |
+| Limit | Capacity | `default_limits` | `strict_limits` |
+| --- | --- | --- | --- |
+| Parameters in one sequence | 16 | 16 | 8 |
+| Sub-parameters in one colon group | 16 | 6 | 4 |
+| Entries in one sequence, a sub-parameter counting as one | 16 | 16 | 16 |
+| Largest value one parameter may hold | 65534 | 65534 | 4095 |
+| Intermediate bytes kept | 2 | 2 | 2 |
+| Bytes of OSC or DCS payload reported | none | 4096 | 128 |
 
 ## Install
 
@@ -93,16 +96,15 @@ fn main() [io]
     // The bytes of ESC [ 2 ; 1 H, fed one at a time, as they would
     // arrive from a terminal.
     for b in [0x1B, 0x5B, 0x32, 0x3B, 0x31, 0x48]
-        let step = vtparse.feed_byte(p, b)
-        // Keep the parser the step returned; it is the one to feed next.
-        p = step.parser
-        match step.action
+        // Keep the parser that comes back; it is the one to feed next.
+        p = vtparse.feed(p, b)
+        match vtparse.action_of(p)
             // Final byte 0x48 is `H`: put the cursor somewhere.
             AnsiCsiDispatch(0x48) =>
-                // The parameters are still on the parser the dispatch
-                // came with. 1 is the fallback for an omitted one.
-                let row = vtparse.param_at(step.parser, 0, 1)
-                let col = vtparse.param_at(step.parser, 1, 1)
+                // The parameters are on the parser the dispatch came
+                // with. 1 is the fallback for an omitted one.
+                let row = vtparse.param_at(p, 0, 1)
+                let col = vtparse.param_at(p, 1, 1)
                 println(str.from_int(row) + "," + str.from_int(col))
             // Every other byte of the sequence was consumed silently.
             _ => println("consumed")
@@ -130,22 +132,26 @@ Build and test with `novo pkg build` and `novo test`.
 
 | Module | Contents |
 | --- | --- |
-| `vtparse` | The state machine: the parser value, the twelve states it rests in, the action returned for one byte, the caller-set limits, and the readers for the parameters, the sub-parameters, the intermediates and the private marker. |
+| `vtcore` | The state machine itself: the parser value, the twelve states it rests in, the action reported for one byte, the limits, and the readers for the parameters, the sub-parameters, the intermediates and the private marker. It speaks integers alone, allocates nothing, and is the module that builds for a microcontroller. |
+| `vtparse` | The same machine for a program with a heap. `action_of` answers an enum, `state_of` answers an enum, `params_of` copies a dispatch's numbers into a value that outlives the parser, and `drain` runs a whole chunk. The readers are forwarded, so a program on a host uses this module alone. |
 | `sgr` | The attribute model: one struct holding everything SGR can say about a character, the colour type covering all three forms, the fold of a parameter list onto a set of attributes, and the inverse. |
 | `seqwrite` | The writer: cursor movement, erasing, scrolling, insertion and deletion, the named terminal modes, text, OSC strings, and three escape hatches for sequences this module does not name. Every function appends to a caller's buffer and returns it. |
 | `vtquery` | The questions a program can ask a terminal and the answers, as two halves: one builds the question, the other reads a reply out of an ordinary control sequence dispatch. |
 
 ## How to choose an entry point
 
-**`vtparse.feed_byte` takes one byte and copies no parameter list.** It
-is the entry point everything else is written over, and the cheaper of
-the two. The parameters of a dispatch are read off the parser it
-returned.
+**`vtparse.feed` takes one byte and allocates nothing.** It is the
+entry point everything else is written over, and the cheaper of the two.
+The parameters of a dispatch are read off the parser it returned.
 
-**`vtparse.feed` takes a whole chunk and answers a list.** Each entry
+**`vtcore.feed` is the same function without the enums.** A program with
+no heap allocator calls it and reads the action as an integer. A program
+on a host may call either, on any byte.
+
+**`vtparse.drain` takes a whole chunk and answers a list.** Each entry
 pairs an action with a copy of the parameters it fired with, so a caller
 can look at them after the parser has moved on. The copy costs one
-allocation per dispatch.
+allocation per action.
 
 **`seqwrite`'s named functions cover the sequences with names.**
 `cursor_to`, `erase_display`, `set_mode` and the rest take the arguments
@@ -164,7 +170,7 @@ byte for byte. Rule 14 below says which sequences need it.
 ## The rules a user needs
 
 1. **A dispatch action carries its final byte and nothing else.** The
-   parameters stay on the parser returned beside it. Read them with
+   parameters stay on the parser `feed` returned. Read them with
    `param_at`, `sub_at`, `intermediate_at` and `private_marker_of`
    before feeding the next byte, or copy them out with `params_of`.
 2. **`param_at` takes the fallback for an omitted parameter as an
@@ -210,10 +216,15 @@ byte for byte. Rule 14 below says which sequences need it.
    `Result` anywhere in this package. A malformed UTF-8 sequence is an
    `AnsiBadUtf8` refusal followed by `REPLACEMENT_CHAR`, which is
    U+FFFD, as Unicode section 3.9 prescribes.
-10. **An OSC's numeric code is not known when the string starts.** It
-    arrives as the payload bytes before the first semicolon. Accumulate
-    the bytes reported by `AnsiOscPut`, and once `AnsiOscEnd` has fired
-    read them with `osc_code` and `osc_field`.
+10. **The payload of an OSC or a DCS is delivered a byte at a time, and
+    the buffer it goes into is the caller's.** `AnsiOscStart` says a
+    string began, `AnsiOscPut` carries one byte, and `AnsiOscEnd` says
+    it ended and which terminator it used. The parser holds no part of
+    the payload, so the ceiling on how much to keep is the caller's.
+    `AnsiDcsStart`, `AnsiDcsPut` and `AnsiDcsEnd` are the same three for
+    a device control string. An OSC's numeric code arrives as the
+    payload bytes before the first semicolon, so read it with
+    `osc_code`, `osc_field` and `osc_body` once the end has fired.
 11. **Report the terminator you were asked with.** `AnsiOscEnd` and
     `AnsiDcsEnd` say whether the string ended with BEL or with ST. A
     program answering an OSC query echoes the terminator it received;
@@ -239,32 +250,45 @@ byte for byte. Rule 14 below says which sequences need it.
     control.** The parser decodes it as the first byte of a codepoint.
     The 8-bit forms of CSI, OSC and the rest are therefore not
     recognised; every terminal in use sends the two-byte `ESC [` form.
+16. **A payload that passes `osc_bytes_max` or `dcs_bytes_max` is
+    truncated, and the string still ends.** The byte at the ceiling is
+    reported as `AnsiRefused(AnsiOscTooLong)` or
+    `AnsiRefused(AnsiDcsTooLong)`, every byte after it is dropped, and
+    `AnsiOscEnd` or `AnsiDcsEnd` fires when the terminator arrives. A
+    consumer that has been accumulating therefore always gets the end it
+    needs to close its buffer.
+17. **The parser is copied wherever it is passed or stored.** It is a
+    `@value` struct of seventy-two bytes. `p = vtparse.feed(p, b)`
+    copies it. Storing it in a `var` field of a struct, in an optional,
+    in a tuple or in an enum payload copies it as well. Keep it in a
+    local, or in one field, and feed it in place. A list of parsers
+    rebuilt per byte, and a parser passed through an optional on the
+    byte path, each pay a copy the program does not need.
 
 ## Running on a microcontroller
 
-No module of this package builds for a device with no heap allocator,
-and the next paragraph says what stands in the way.
+The `vtcore` module builds for a device with no heap allocator, and
+`tests/embedded_probe.nv` is a program that builds for a Cortex-M4,
+boots under QEMU and checks the machine's answers there.
 
-A device with no heap allocator may not use a container that grows.
-Three fields of `AnsiParser` are lists, which grow. They are the
-parameters, their groups and the intermediate bytes. The compiler also
-stores a structure on the stack only when every one of its fields is a
-fixed-size value, so a structure with a list field lives on the heap.
-Feeding one byte therefore allocates two of them, the parser that comes
-back and the step that carries it.
+```
+novo build --target=nrf52-qemu tests/embedded_probe.nv
+```
 
-What has to change is those three fields. Each one becomes a
-fixed-capacity buffer, of the kind
-[heapless-nv](https://novo-lang.org/packages/heapless-nv) provides.
-That changes a type every program using this package can see, so it is
-a release of its own rather than a patch. Nothing else stands in the
-way, because no function here reads a clock, opens a file or performs
-input or output of any kind.
+What builds there is `vtcore` and nothing else. The other three modules
+speak `Str`, `Bytes` and lists, which the embedded runtime does not
+define, and one host-only function anywhere in a compilation unit is an
+undefined symbol at link time whether or not the firmware calls it. A
+device therefore reads the action as an integer, through `action_kind`
+and `action_arg`, and writes its own sequences.
 
-`tests/alloc_probe.nv` is a small program whose compiled output can be
-read for allocations, and `scripts/alloc_scan.py` prints one count per
-function. They are how the two allocations above were counted, and how
-a reader can check the number for themselves.
+`vtcore.AnsiParser` holds its parameters in fixed-size buffers and lives
+in the caller's stack frame rather than on the heap. Feeding one byte
+allocates nothing. `tests/alloc_probe.nv` is a program whose compiled
+output can be read for allocations, and `tests/alloc_scan.sh` is the
+check that fails when one appears. It runs twice more on copies with an
+allocation spliced in: the scan has to name that allocation, and the
+compiler has to refuse it.
 
 ## What is not included
 
@@ -322,11 +346,14 @@ a reader can check the number for themselves.
 ## Tests
 
 ```bash
-novo test --isolate tests/vtparse_tests.nv   # 18 tests: the state machine
+novo test --isolate tests/vtcore_tests.nv    # 14 tests: the integer surface a device uses
+novo test --isolate tests/vtparse_tests.nv   # 19 tests: the state machine
 novo test --isolate tests/sgr_tests.nv       # 15 tests: attributes, writer, queries
-novo test --isolate tests/surface_tests.nv   # 13 tests: every signature, called once
+novo test --isolate tests/surface_tests.nv   # 14 tests: every signature, called once
 novo test --isolate tests/corpus_tests.nv    # 36 tests: novo-vte's cases, every state, every limit
 novo test --isolate tests/writer_tests.nv    # 32 tests: the exact bytes of every sequence
+bash tests/coverage.sh                       # the merged line coverage over src/
+bash tests/alloc_scan.sh                     # nothing on the feed path allocates
 ```
 
 The sequences the suites assert on come from xterm's `ctlseqs` for the
@@ -357,9 +384,19 @@ from the limit it belongs to.
 writes. Where a sequence can also be read, it is fed back through this
 package's own parser and has to come out as what it was.
 
-Every line of `src/` is executed by the suites: 836 of 836, with no
+`vtcore_tests.nv` drives the machine through the integer surface, which
+is what a device has. It reaches the answers the enum surface cannot
+ask for: a ceiling above the package's capacity, a parameter count of
+zero, a group that does not exist, and a string payload fed past its
+ceiling.
+
+Every line of `src/` is executed by the suites: 950 of 950, with no
 region excused. `novo test --cov` measures one file at a time, so
-`scripts/coverage.py` merges the per-file reports and prints the total.
+`tests/coverage.sh` merges the per-file reports and prints the total.
+
+`tests/bench_parse.nv` feeds one stream through the parser two ways, as
+a local and out of a field of a struct, and prints the throughput of
+each.
 
 No test opens a descriptor or writes anything.
 

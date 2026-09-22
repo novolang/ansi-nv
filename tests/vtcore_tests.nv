@@ -1,0 +1,279 @@
+// vtcore_tests.nv — the machine through the integer surface a device
+// uses.
+//
+// The other suites drive the same machine through `vtparse`, where the
+// action is an enum.  This one calls `vtcore` directly, which is what a
+// program with no heap has, and reaches the arms the enum surface
+// cannot: a limit above the package's capacity, a limit of zero, a
+// group that does not exist, and a string payload fed past its ceiling.
+
+use std.test
+use vtcore
+
+// ── Helpers ─────────────────────────────────────────────────────────
+
+// The parser after a run of bytes, under the limits given.
+fn run_with(limits: vtcore.AnsiLimits, bytes: [Int]) -> vtcore.AnsiParser
+    var p = vtcore.parser_with(limits)
+    for b in bytes
+        p = vtcore.feed(p, b)
+    p
+
+// The same under `default_limits`.
+fn run(bytes: [Int]) -> vtcore.AnsiParser
+    run_with(vtcore.default_limits(), bytes)
+
+// The fault a run produced, or -1 when it produced none.  A refusal is
+// followed by the bytes the machine consumes on its way to the final
+// byte, so the parser at the end of a run no longer carries it.
+fn fault_in(limits: vtcore.AnsiLimits, bytes: [Int]) -> Int
+    var p = vtcore.parser_with(limits)
+    var found = 0 - 1
+    for b in bytes
+        p = vtcore.feed(p, b)
+        if vtcore.action_kind(p) == vtcore.ACT_REFUSED and found < 0
+            found = vtcore.action_arg(p)
+    found
+
+// ── The surface ─────────────────────────────────────────────────────
+
+@test
+fn test_a_fresh_parser_rests_in_the_ground_state() [io]
+    let p = vtcore.parser_new()
+
+    test.case("a new parser is in the ground state")
+    test.assert(vtcore.state_code(p) == vtcore.ST_GROUND)
+    test.assert(vtcore.is_settled(p))
+
+    test.case("and has nothing to report")
+    test.assert(vtcore.action_kind(p) == vtcore.ACT_NOTHING)
+    test.assert(vtcore.action_arg(p) == 0)
+
+    test.case("and holds no parameters, intermediates or marker")
+    test.assert(vtcore.param_count(p) == 0)
+    test.assert(vtcore.intermediate_count(p) == 0)
+    test.assert(vtcore.private_marker_of(p) == vtcore.NO_PRIVATE_MARKER)
+
+@test
+fn test_one_byte_reports_one_action() [io]
+    test.case("a printable byte is a print of its codepoint")
+    let a = vtcore.feed(vtcore.parser_new(), 0x41)
+    test.assert(vtcore.action_kind(a) == vtcore.ACT_PRINT)
+    test.assert(vtcore.action_arg(a) == 0x41)
+
+    test.case("a C0 control is an execute of its byte")
+    let b = vtcore.feed(vtcore.parser_new(), 0x0A)
+    test.assert(vtcore.action_kind(b) == vtcore.ACT_EXECUTE)
+    test.assert(vtcore.action_arg(b) == 0x0A)
+
+    test.case("and a control sequence dispatches on its final byte")
+    let c = run([0x1B, 0x5B, 0x32, 0x3B, 0x31, 0x48])
+    test.assert(vtcore.action_kind(c) == vtcore.ACT_CSI_DISPATCH)
+    test.assert(vtcore.action_arg(c) == 0x48)
+    test.assert(vtcore.param_at(c, 0, 1) == 2)
+    test.assert(vtcore.param_at(c, 1, 1) == 1)
+
+@test
+fn test_a_reset_forgets_a_partial_sequence() [io]
+    let p = vtcore.feed(vtcore.parser_new(), 0x1B)
+
+    test.case("an ESC leaves the machine unsettled")
+    test.assert(vtcore.state_code(p) == vtcore.ST_ESCAPE)
+
+    test.case("and a reset puts it back in the ground state")
+    test.assert(vtcore.is_settled(vtcore.reset(p)))
+
+@test
+fn test_a_colon_group_reads_back_as_its_parts() [io]
+    // `CSI 38:2::1:2:3 m`, the colon form of a 24-bit foreground.
+    let p = run([0x1B, 0x5B, 0x33, 0x38, 0x3A, 0x32, 0x3A, 0x3A,
+                 0x31, 0x3A, 0x32, 0x3A, 0x33, 0x6D])
+
+    test.case("the whole group is one parameter")
+    test.assert(vtcore.param_count(p) == 1)
+    test.assert(vtcore.param_at(p, 0, 0) == 38)
+
+    test.case("with six entries in it")
+    test.assert(vtcore.sub_count(p, 0) == 6)
+    test.assert(vtcore.sub_at(p, 0, 1, 0) == 2)
+
+    test.case("and the empty middle slot answers the fallback")
+    test.assert(vtcore.sub_at(p, 0, 2, 0 - 7) == 0 - 7)
+
+    test.case("the channels follow it")
+    test.assert(vtcore.sub_at(p, 0, 3, 0) == 1)
+    test.assert(vtcore.sub_at(p, 0, 4, 0) == 2)
+    test.assert(vtcore.sub_at(p, 0, 5, 0) == 3)
+
+@test
+fn test_a_group_that_does_not_exist_answers_nothing() [io]
+    let p = run([0x1B, 0x5B, 0x35, 0x48])
+
+    test.case("a parameter past the end takes the fallback")
+    test.assert(vtcore.param_at(p, 4, 0 - 1) == 0 - 1)
+
+    test.case("a negative index takes it too")
+    test.assert(vtcore.param_at(p, 0 - 1, 0 - 2) == 0 - 2)
+
+    test.case("and a group past the end holds no sub-parameters")
+    test.assert(vtcore.sub_count(p, 9) == 0)
+    test.assert(vtcore.sub_at(p, 9, 0, 0 - 3) == 0 - 3)
+
+    test.case("a sub-parameter index past the group takes the fallback")
+    test.assert(vtcore.sub_at(p, 0, 4, 0 - 4) == 0 - 4)
+
+@test
+fn test_an_intermediate_byte_is_kept_apart_from_the_parameters() [io]
+    // `CSI 2 SP q` — DECSCUSR, set cursor style.
+    let p = run([0x1B, 0x5B, 0x32, 0x20, 0x71])
+
+    test.case("the intermediate is reported by itself")
+    test.assert(vtcore.intermediate_count(p) == 1)
+    test.assert(vtcore.intermediate_at(p, 0) == 0x20)
+
+    test.case("and an index past the end answers zero")
+    test.assert(vtcore.intermediate_at(p, 1) == 0)
+    test.assert(vtcore.intermediate_at(p, 0 - 1) == 0)
+
+@test
+fn test_a_limit_above_the_capacity_is_lowered_to_it() [io]
+    // Every ceiling asked for above what the buffers hold.
+    let wide = AnsiLimits { param_max: 200000, osc_bytes_max: 8192,
+                            dcs_bytes_max: 8192, params_max: 200, subs_max: 200,
+                            intermediates_max: 9 }
+    let got = vtcore.limits_of(vtcore.parser_with(wide))
+
+    test.case("the parameter count comes down to the entry capacity")
+    test.assert((got.params_max as Int) == vtcore.ENTRY_CAP)
+    test.assert((got.subs_max as Int) == vtcore.ENTRY_CAP)
+
+    test.case("the intermediate count to its own")
+    test.assert((got.intermediates_max as Int) == vtcore.INTERMEDIATE_CAP)
+
+    test.case("and the largest parameter to what sixteen bits hold")
+    test.assert((got.param_max as Int) == vtcore.PARAM_MAX_CAP)
+
+    test.case("a ceiling the buffers can meet is kept")
+    test.assert((got.osc_bytes_max as Int) == 8192)
+    test.assert((got.dcs_bytes_max as Int) == 8192)
+
+@test
+fn test_a_parameter_count_of_zero_refuses_the_first_digit() [io]
+    let none = AnsiLimits { param_max: 65534, osc_bytes_max: 128, dcs_bytes_max: 128,
+                            params_max: 0, subs_max: 4, intermediates_max: 2 }
+    let p = run_with(none, [0x1B, 0x5B, 0x31])
+
+    test.case("the first digit of the first parameter is the fault")
+    test.assert(vtcore.action_kind(p) == vtcore.ACT_REFUSED)
+    test.assert(vtcore.action_arg(p) == vtcore.FAULT_TOO_MANY_PARAMS)
+
+    test.case("and the rest of the sequence is consumed")
+    test.assert(vtcore.state_code(p) == vtcore.ST_CSI_IGNORE)
+
+@test
+fn test_an_oversized_string_still_ends() [io]
+    let tight = AnsiLimits { param_max: 4095, osc_bytes_max: 2, dcs_bytes_max: 2,
+                             params_max: 8, subs_max: 4, intermediates_max: 2 }
+
+    // `OSC a b c d BEL` against a ceiling of two payload bytes.
+    var p = vtcore.parser_with(tight)
+    var kinds: [Int] = []
+    for b in [0x1B, 0x5D, 0x61, 0x62, 0x63, 0x64, 0x07]
+        p = vtcore.feed(p, b)
+        kinds = list.push(kinds, vtcore.action_kind(p))
+
+    test.case("two bytes are reported, then one fault, then silence")
+    test.assert(list.get(kinds, 2) == vtcore.ACT_OSC_PUT)
+    test.assert(list.get(kinds, 3) == vtcore.ACT_OSC_PUT)
+    test.assert(list.get(kinds, 4) == vtcore.ACT_REFUSED)
+    test.assert(list.get(kinds, 5) == vtcore.ACT_NOTHING)
+
+    test.case("the fault names the OSC ceiling")
+    test.assert(list.get(kinds, 5) == vtcore.ACT_NOTHING)
+
+    test.case("and the string still ends, so a consumer can close its buffer")
+    test.assert(list.get(kinds, 6) == vtcore.ACT_OSC_END)
+    test.assert(vtcore.action_arg(p) == vtcore.TERM_BEL)
+    test.assert(vtcore.is_settled(p))
+
+@test
+fn test_an_oversized_device_control_string_ends_the_same_way() [io]
+    let tight = AnsiLimits { param_max: 4095, osc_bytes_max: 2, dcs_bytes_max: 2,
+                             params_max: 8, subs_max: 4, intermediates_max: 2 }
+
+    // `DCS q a b c d ST` against a ceiling of two payload bytes.
+    var p = vtcore.parser_with(tight)
+    var kinds: [Int] = []
+    for b in [0x1B, 0x50, 0x71, 0x61, 0x62, 0x63, 0x64, 0x1B, 0x5C]
+        p = vtcore.feed(p, b)
+        kinds = list.push(kinds, vtcore.action_kind(p))
+
+    test.case("the string starts on its final byte")
+    test.assert(list.get(kinds, 2) == vtcore.ACT_DCS_START)
+
+    test.case("two payload bytes are reported, then one fault, then silence")
+    test.assert(list.get(kinds, 3) == vtcore.ACT_DCS_PUT)
+    test.assert(list.get(kinds, 4) == vtcore.ACT_DCS_PUT)
+    test.assert(list.get(kinds, 5) == vtcore.ACT_REFUSED)
+    test.assert(list.get(kinds, 6) == vtcore.ACT_NOTHING)
+
+    test.case("and the end still fires, with the terminator it arrived with")
+    test.assert(list.get(kinds, 8) == vtcore.ACT_DCS_END)
+    test.assert(vtcore.action_arg(p) == vtcore.TERM_ST)
+
+@test
+fn test_the_entry_buffer_refuses_a_seventeenth_parameter() [io]
+    // Sixteen parameters fit; the semicolon that would open the
+    // seventeenth is the fault.
+    var bytes = [0x1B, 0x5B, 0x31]
+    for _ in 0..16
+        bytes = list.push(bytes, 0x3B)
+        bytes = list.push(bytes, 0x31)
+    test.case("the sequence is refused for its parameter count")
+    test.assert(fault_in(vtcore.default_limits(), bytes) == vtcore.FAULT_TOO_MANY_PARAMS)
+
+@test
+fn test_the_entry_buffer_refuses_a_third_colon_colour() [io]
+    // `CSI 38:2::1:2:3;48:2::1:2:3;58:2::1:2:3 m` sets a foreground, a
+    // background and an underline colour in the colon form.  Each is
+    // six entries, and the buffer holds sixteen, so the third one runs
+    // out of room.  The semicolon form of the same three attributes is
+    // fifteen entries and fits.
+    var bytes = [0x1B, 0x5B]
+    for intro in [0x33, 0x34, 0x35]
+        if list.len(bytes) > 2
+            bytes = list.push(bytes, 0x3B)
+        bytes = list.concat(bytes,
+                            [intro, 0x38, 0x3A, 0x32, 0x3A, 0x3A, 0x31, 0x3A,
+                             0x32, 0x3A, 0x33])
+    bytes = list.push(bytes, 0x6D)
+
+    test.case("the sequence is refused for its entry count")
+    test.assert(fault_in(vtcore.default_limits(), bytes) == vtcore.FAULT_TOO_MANY_PARAMS)
+
+@test
+fn test_the_two_presets_differ_where_memory_does() [io]
+    let loose = vtcore.default_limits()
+    let tight = vtcore.strict_limits()
+
+    test.case("the strict preset takes less of everything that costs memory")
+    test.assert((tight.params_max as Int) < (loose.params_max as Int))
+    test.assert((tight.subs_max as Int) < (loose.subs_max as Int))
+    test.assert((tight.param_max as Int) < (loose.param_max as Int))
+    test.assert((tight.osc_bytes_max as Int) < (loose.osc_bytes_max as Int))
+    test.assert((tight.dcs_bytes_max as Int) < (loose.dcs_bytes_max as Int))
+
+    test.case("and both keep the two intermediate bytes ECMA-48 defines")
+    test.assert((tight.intermediates_max as Int) == 2)
+    test.assert((loose.intermediates_max as Int) == 2)
+
+@test
+fn test_the_replacement_character_is_published_for_the_caller_to_print() [io]
+    test.case("a lone continuation byte is a UTF-8 fault")
+    let p = vtcore.feed(vtcore.parser_new(), 0x80)
+    test.assert(vtcore.action_kind(p) == vtcore.ACT_REFUSED)
+    test.assert(vtcore.action_arg(p) == vtcore.FAULT_BAD_UTF8)
+
+    test.case("and U+FFFD is what the caller puts in its place")
+    test.assert(vtcore.REPLACEMENT_CHAR == 0xFFFD)
+    test.assert(vtcore.PARAM_EMPTY == 0 - 1)

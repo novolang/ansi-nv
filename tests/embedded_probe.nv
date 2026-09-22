@@ -1,0 +1,119 @@
+// tests/embedded_probe.nv — `vtcore` on a microcontroller, as a program
+// that builds for a Cortex-M, boots there and checks its answers.
+//
+// This file and the module its `use` line reaches are built with
+//
+//   novo build --target=nrf52-qemu tests/embedded_probe.nv
+//
+// which produces a Cortex-M4 ELF or fails.  Running on a device is one
+// of the two reasons the parser is a value rather than a boxed struct;
+// the other is that feeding a byte then allocates nothing.
+//
+// The same ELF boots under
+//
+//   qemu-system-arm -machine mps2-an386 -nographic -semihosting -kernel probe.elf
+//
+// and writes `ok` for each of the four things it checks.  The build
+// checks something the run cannot.  `--target=nrf52-qemu` stamps
+// `@tier(embedded)` on every function it compiles, so a `Str`
+// concatenation, a list literal or an unbounded `while` is refused
+// wherever it is written.
+//
+// The three other modules are not used here.  They speak `Str`, `Bytes`
+// and lists, the embedded runtime defines none of them, and one
+// host-only function anywhere in a compilation unit is an undefined
+// symbol at link time whether or not the firmware calls it.  A device
+// therefore reads the action as an integer.
+
+use vtcore
+
+// A stream held the way firmware holds one.  The array is a field of a
+// `@value` struct rather than a return type.  `[u8; N]` is a true
+// inline array only inside one; outside, the annotation still means a
+// list, and a list literal is an implicit heap allocation a device
+// build refuses (SPEC section 14.4).
+@value
+struct ProbeStream
+    b: [u8; 6]
+
+// `ESC [ 2 ; 1 H` — CUP, put the cursor on row 2, column 1.  The
+// shortest sequence that carries two parameters.
+fn cup_stream() -> ProbeStream
+    ProbeStream { b: [0x1B as u8, 0x5B as u8, 0x32 as u8, 0x3B as u8,
+                      0x31 as u8, 0x48 as u8] }
+
+// `ESC ] 0 ; h BEL` — OSC 0, set the window title, whose payload
+// arrives a byte at a time.
+@value
+struct ProbeOsc
+    b: [u8; 6]
+
+fn osc_stream() -> ProbeOsc
+    ProbeOsc { b: [0x1B as u8, 0x5D as u8, 0x30 as u8, 0x3B as u8,
+                   0x68 as u8, 0x07 as u8] }
+
+fn say(label: Str, good: Bool) [hw]
+    hal.uart.write(label)
+    if good
+        hal.uart.write(": ok\n")
+    else
+        hal.uart.write(": BAD\n")
+
+fn main() [hw]
+    // The constants and the capacities, so a device that sizes a
+    // receive buffer compiles the same numbers the host does.
+    var good = vtcore.ENTRY_CAP == 16 and vtcore.INTERMEDIATE_CAP == 2
+    good = good and vtcore.PARAM_MAX_CAP == 65534
+    good = good and vtcore.REPLACEMENT_CHAR == 0xFFFD
+    let tight: AnsiLimits = vtcore.strict_limits()
+    good = good and (tight.osc_bytes_max as Int) == 128
+    say("limits", good)
+
+    // A fresh parser rests in the ground state and holds nothing.
+    //
+    // Each step is bound with its type written out because a call into
+    // another module does not have its return type inferred in a
+    // single-file build.  Inside a package built as one unit — which is
+    // what every host suite does — none of these annotations is needed.
+    var p: AnsiParser = vtcore.parser_with(tight)
+    good = vtcore.state_code(p) == vtcore.ST_GROUND
+    good = good and vtcore.is_settled(p)
+    good = good and vtcore.param_count(p) == 0
+    say("ground", good)
+
+    // A control sequence driven a byte at a time, which is the shape a
+    // device reading a serial console has.  One byte goes in, one
+    // parser comes out, and nothing is allocated to pass either.
+    let cup = cup_stream()
+    var dispatched = false
+    for i in 0..6
+        p = vtcore.feed(p, cup.b[i] as Int)
+        if vtcore.action_kind(p) == vtcore.ACT_CSI_DISPATCH
+            dispatched = true
+    good = dispatched and vtcore.action_arg(p) == 0x48
+    good = good and vtcore.param_at(p, 0, 1) == 2
+    good = good and vtcore.param_at(p, 1, 1) == 1
+    good = good and vtcore.is_settled(p)
+    say("dispatch", good)
+
+    // An OSC string, whose payload the parser does not hold.  A device
+    // keeps the bytes it wants and drops the rest, which is what makes
+    // an unbounded paste from a hostile peer cost it nothing.
+    let osc = osc_stream()
+    var started = false
+    var payload = 0
+    var ended = false
+    for i in 0..6
+        p = vtcore.feed(p, osc.b[i] as Int)
+        let k = vtcore.action_kind(p)
+        if k == vtcore.ACT_OSC_START
+            started = true
+        if k == vtcore.ACT_OSC_PUT
+            payload = payload + 1
+        if k == vtcore.ACT_OSC_END
+            ended = true
+    good = started and payload == 3 and ended
+    good = good and vtcore.action_arg(p) == vtcore.TERM_BEL
+    say("string", good)
+
+    hal.uart.write("ansi-nv: one byte in, one parser out\n")

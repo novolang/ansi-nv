@@ -5,6 +5,157 @@ All notable changes to ansi-nv are recorded here. The format is
 package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 with the pre-1.0 rule that a breaking change bumps the MINOR number.
 
+## 0.2.0 — 2026-09-22
+
+The parser is a value over fixed-capacity buffers.  Feeding a byte
+allocates nothing, the machine builds and runs for a device again, and
+the type every consumer holds has changed shape.
+
+### Breaking
+
+- `AnsiParser` is `vtcore.AnsiParser`, a `@value` struct.  It holds its
+  parameters in a sixteen-entry buffer of sixteen-bit values, with one
+  bit per entry saying whether a colon opened it.  It holds its two
+  intermediate bytes in a two-byte buffer, and its state and its last
+  action as integers.  The three `[Int]` fields are gone.  The whole is
+  seventy-two bytes and lives in the caller's stack frame.  A consumer
+  that read `p.values`, `p.groups` or `p.intermediates` reads
+  `param_at`, `sub_at` and `intermediate_at` instead, which it could
+  already do.  A consumer that built an `AnsiParser` literal calls
+  `parser_new` or `parser_with`.
+- `vtcore` is a new module, and `AnsiParser`, `AnsiLimits` and the
+  parser's own functions are declared in it.  `vtparse` forwards every
+  reader, so a program on a host names `vtparse` alone.  The type in a
+  signature it writes out is `vtcore.AnsiParser`, so
+  `fn f(p: vtparse.AnsiParser)` becomes `fn f(p: vtcore.AnsiParser)` and
+  the file gains `use vtcore`.
+- `feed_byte` and `AnsiStep` are gone.  `feed(p, b)` takes one byte and
+  answers the parser after it, and what the byte asked for is read off
+  that parser with `action_of`.  A loop written as
+  `let step = vtparse.feed_byte(p, b)`, then `p = step.parser`, then
+  `match step.action`, becomes `p = vtparse.feed(p, b)` then
+  `match vtparse.action_of(p)`.  Everywhere `step.parser` was read, read
+  `p`.
+- `feed(p, chunk)`, the chunk entry point, is now `drain(p, chunk)`.
+  The name `feed` is the byte path, which is the one a caller should
+  reach for first.  `AnsiDrained` and `AnsiCall` are unchanged.  Rename
+  the call.  A consumer that passed a `[u8]` to `feed` gets a type error
+  rather than a silent change of meaning.
+- `AnsiLimits` fields are stored at the widths their ranges need.
+  `param_max`, `osc_bytes_max` and `dcs_bytes_max` are `u32`, and
+  `params_max`, `subs_max` and `intermediates_max` are `u8`.  A literal
+  whose values are in range is written as it always was.  Reading a
+  field into an `Int` takes a cast, as in `limits.params_max as Int`.
+  Building one from a variable rather than a literal takes the matching
+  cast on the way in.
+- A ceiling above the package's capacity is lowered to it.  The
+  capacities are sixteen entries, two intermediate bytes and 65534 as
+  the largest parameter value.  They are published as
+  `vtcore.ENTRY_CAP`, `vtcore.INTERMEDIATE_CAP` and
+  `vtcore.PARAM_MAX_CAP`, and `limits_of` answers what the parser is
+  enforcing.  A caller that asks for more reads back less.  Nothing
+  refuses a limits value for being large.
+- `default_limits` allows 16 parameters rather than 32, and a largest
+  parameter value of 65534 rather than 65535.  Sixteen entries is what
+  fits in a value copied on every byte, and 65535 is the mark for a
+  parameter the sequence left empty.  A sequence with more than sixteen
+  parameters is now refused with `AnsiRefused(AnsiTooManyParams)` and
+  dropped.  A sequence with three colour parameters in the colon form is
+  eighteen entries, and is refused for the same reason.  The semicolon
+  form of the same three colours is fifteen entries and still fits.
+- An OSC or DCS payload that passes its ceiling no longer swallows the
+  end of the string.  The byte at the ceiling is reported as
+  `AnsiRefused(AnsiOscTooLong)` or `AnsiRefused(AnsiDcsTooLong)`, every
+  byte after it is dropped, and `AnsiOscEnd` or `AnsiDcsEnd` fires when
+  the terminator arrives.  A consumer that closed its accumulation
+  buffer on the end action now always reaches that close.  A consumer
+  that treated the refusal as the end of the string will see the end as
+  well, and should close once.
+
+### Added
+
+- `vtcore`, the machine.  It speaks integers alone: the state, the
+  action and the fault each arrive as an integer with a published
+  constant per case.  An enum is a tagged value and a list literal is a
+  heap allocation, and an `@tier(embedded)` function may have neither.
+  Every function in the module carries that annotation.
+- `tests/embedded_probe.nv`, which builds `vtcore` for a Cortex-M4 and
+  checks four answers on it under QEMU.  The build is
+  `novo build --target=nrf52-qemu tests/embedded_probe.nv`, and the
+  README says what runs there.
+- `tests/alloc_scan.sh`, which reads the emitted LLVM and fails when a
+  function of `vtcore` can put a cell on the heap.  It carries two
+  negative controls.  One splices an allocation in and requires the scan
+  to name it.  The other splices the same allocation in with
+  `@tier(embedded)` left on and requires the compiler to refuse it.
+- `tests/bench_parse.nv`, which feeds one stream through the parser
+  twice and prints the throughput of each: the parser in a local, and
+  the parser in a `var` field of a boxed struct.
+- `tests/coverage.sh`, which merges the per-suite LCOV and reports
+  `src/` alone.  It replaces `scripts/coverage.py`.
+- `tests/vtcore_tests.nv`, fourteen cases over the integer surface.
+- The twelve `sgr` setters are `pub`: `set_fg`, `set_bg`,
+  `set_underline_color`, `set_bold`, `set_dim`, `set_italic`,
+  `set_underline`, `set_blink`, `set_inverse`, `set_hidden`,
+  `set_strike` and `set_overline`.  `SgrAttrs` has twelve fields and
+  none of them is `var`, so a consumer outside this package could reach
+  only `attrs_default` and the SGR codes.  Each setter takes a set of
+  attributes and answers a new one.
+- `vtparse.osc_body`, which is everything after the first semicolon of
+  an accumulated OSC payload, and `None` when the payload has no
+  semicolon.  `OSC 8 ; <params> ; <uri>` is the case `osc_field` splits
+  and this one keeps whole.
+
+### Migration, beyond the signatures
+
+- The parser is copied wherever it is passed by value, and wherever it
+  crosses into a pointer-shaped slot: an optional, a `Result`, a tuple,
+  an enum payload, or a field of a boxed struct (SPEC section 14.5).
+  Keep it in a local, or in one `var` field of a struct, and feed it in
+  place.  A list of parsers rebuilt per byte, or a parser passed through
+  an optional on the byte path, pays a copy it does not need.  Measured
+  by `tests/bench_parse.nv` on one stream of 332 000 bytes, best of
+  eight runs on one workstation: 26.1 MB/s through 0.1.1 with the
+  parser in a local, 24.6 MB/s through this release with the value in a
+  local, and 31.0 MB/s with the value in a `var` field.  The three
+  answer the same checksum.
+- There is no pack and unpack pair, and there is nothing left for one to
+  do.  It was asked for so that a program keeping its parser in an
+  integer handle could put the parser's state into an array of integers
+  and take it back out.  A `@value` struct goes in a `var` field of the
+  struct that holds the handle, one assignment each way.
+- The parser holds no part of an OSC or DCS payload.  Accumulate the
+  bytes reported by `AnsiOscPut`, between `AnsiOscStart` and
+  `AnsiOscEnd`, in a buffer of your own, and put your own ceiling on it.
+  `osc_bytes_max` bounds what the parser reports, not what the consumer
+  keeps.
+- A dependent's constraint has to move again.  The seven packages that
+  depend on this one declare `ansi-nv = "^0.1.0"` after the last
+  release, and under the pre-1.0 rule `^0.1.0` does not admit `0.2.0`.
+  Each needs `^0.2.0`.  tui-nv calls `sgr` and `seqwrite` only, and
+  nothing it calls changed.
+
+### Known
+
+- A whole-array field copy of a `@value` struct is lowered through the
+  runtime's reference counter on this toolchain, which probes the four
+  bytes before a stack address for a heap header.  `vtcore` writes the
+  elements of its two array fields out one by one rather than copying
+  the field.  That is 1.6 times faster in a local and 1.8 times in a
+  field — 24.6 MB/s against 15.0, and 31.0 against 16.7 — and reads no
+  memory that is not the parser's.  Filed as novo bug
+  `codegen/value-array-field-copy-calls-dup`.
+- A `@value` struct rebound to a call of itself, as in `p = feed(p, b)`,
+  is copied rather than updated in place: the binding is a slot holding
+  a pointer, and the rebind points it at fresh storage instead of
+  writing into the storage it has.  That is why the parser in a local is
+  slower than the parser in a field, and why a local is no faster than
+  0.1.1's two heap cells per byte.  Filed as novo bug
+  `codegen/value-rebind-in-place`.
+- The minimum toolchain is 0.9.2, which is what this release was built,
+  tested and measured on.
+- No `Result` anywhere, on purpose.  See the 0.0.1 entry.
+
 ## 0.1.1 — 2026-09-18
 
 The documentation and comments in plain prose; no signature changed.

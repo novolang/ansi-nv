@@ -26,6 +26,7 @@
 // terminal's answer to something this package's writer asked, and
 // keymap-nv reports an unrecognised CSI rather than guessing.
 
+use vtcore
 use vtparse
 use seqwrite
 
@@ -153,7 +154,7 @@ fn setting_number(s: AnsiModeSetting) -> Int
 //
 // An explicit loop rather than `list.map` over `list.range`, because
 // `list.range` is refused for wasm and this package builds there.
-fn options_of(p: vtparse.AnsiParser) -> [Int]
+fn options_of(p: vtcore.AnsiParser) -> [Int]
     var out: [Int] = []
     for i in 1..vtparse.param_count(p)
         let v = vtparse.param_at(p, i, 0)
@@ -241,18 +242,17 @@ pub fn write_query(out: [u8], q: AnsiQuery) -> [u8]
 // fn main() [io]
 //     var p = vtparse.parser_new()
 //     for b in [0x1B, 0x5B, 0x31, 0x32, 0x3B, 0x34, 0x30, 0x52]
-//         let step = vtparse.feed_byte(p, b)
-//         p = step.parser
-//         match step.action
+//         p = vtparse.feed(p, b)
+//         match vtparse.action_of(p)
 //             AnsiCsiDispatch(f) =>
-//                 match vtquery.reply_of(step.parser, f)
+//                 match vtquery.reply_of(p, f)
 //                     Some(AnsiCursorPositionReply(row, col)) =>
 //                         println(str.from_int(row))
 //                         println(str.from_int(col))
 //                     _ => println("not a reply")
 //             _ => println("consumed")
 // ```
-pub fn reply_of(p: vtparse.AnsiParser, final_byte: Int) -> ?AnsiReply
+pub fn reply_of(p: vtcore.AnsiParser, final_byte: Int) -> ?AnsiReply
     let marker = vtparse.private_marker_of(p)
     if is_primary_da(marker, final_byte)
         Some(AnsiDeviceAttributesReply(vtparse.param_at(p, 0, 0), options_of(p)))

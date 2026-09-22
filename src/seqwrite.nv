@@ -530,8 +530,7 @@ pub fn csi(out: [u8], private: Int, params: [Int], intermediates: [Int], final_b
 // fn main() [io]
 //     var p = vtparse.parser_new()
 //     for b in [0x1B, 0x5B, 0x34, 0x3A, 0x33, 0x6D]
-//         let step = vtparse.feed_byte(p, b)
-//         p = step.parser
+//         p = vtparse.feed(p, b)
 //     // The same sequence again, out of what the parser kept.
 //     let out = seqwrite.csi_params([], vtparse.params_of(p), 0x6D)
 //     println("${list.len(out)}")

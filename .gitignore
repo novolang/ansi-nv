@@ -1,3 +1,6 @@
 _novo/
 APIDOC.md
 /ansi-nv
+
+# The device build writes its ELF beside the manifest.
+embedded_probe.elf

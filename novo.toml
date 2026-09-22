@@ -1,7 +1,7 @@
 [package]
 name        = "ansi-nv"
-version     = "0.1.1"
-description = "The escape-sequence layer with no terminal under it: the VT/xterm state machine as a byte-at-a-time parser that yields typed actions, the SGR attribute model with all three colour forms, a writer that builds sequences into a caller's buffer instead of printing them, and the query/response pairs a program needs."
+version     = "0.2.0"
+description = "The escape-sequence layer with no terminal under it: the VT/xterm state machine as a byte-at-a-time parser that allocates nothing and compiles for a microcontroller, the SGR attribute model with all three colour forms, a writer that builds sequences into a caller's buffer instead of printing them, and the query/response pairs a program needs."
 license     = "Apache-2.0"
 
 # `experimental` because no program outside this package has used the
@@ -12,21 +12,29 @@ stability   = "experimental"
 # `core`, and the design follows from it.  A terminal is the one place
 # a library is most tempted to print, and nothing here does.  Bytes
 # arrive as arguments, and sequences are appended to a `[u8]` the
-# caller owns and writes itself.  The parser is a value, because
-# `feed_byte` takes one and returns one, which is what lets a caller
-# keep the parser a dispatch fired with and read its parameters
-# afterwards.
+# caller owns and writes itself.
+#
+# It carries `tests/embedded_probe.nv`, which builds `vtcore` for a
+# Cortex-M4 and checks four answers on it under QEMU.  `vtcore` is a
+# `@value` state machine over fixed-capacity buffers, so feeding a byte
+# allocates nothing and the parser lives in the caller's stack frame.
+# The other three modules speak `Str`, `Bytes` and lists, and stay on a
+# host.
+#
+# `tests/alloc_scan.sh` reads the emitted LLVM for the other half of
+# that: every function of `vtcore` appears in the IR at `--opt=0` and
+# none of them calls the allocator.
 layer       = "core"
 
 category    = "terminal"
 
-tags        = ["ansi", "vt100", "xterm", "escape-sequences", "sgr", "csi", "osc", "terminal", "sans-io", "ecma-48"]
+tags        = ["ansi", "vt100", "xterm", "escape-sequences", "sgr", "csi", "osc", "terminal", "sans-io", "ecma-48", "embedded", "no-alloc"]
 repository  = "https://github.com/novolang/ansi-nv"
 maintainers = ["novo-lang"]
-# Built, tested and measured on 0.9.1.  The floor is the toolchain the
+# Built, tested and measured on 0.9.2.  The floor is the toolchain the
 # release was checked against rather than the oldest one that might
 # work.
-novo        = ">= 0.9.1"
+novo        = ">= 0.9.2"
 
 # The package is a library with no `main`, so `novo pkg build`
 # type-checks and effect-checks every module under `src/` and writes no

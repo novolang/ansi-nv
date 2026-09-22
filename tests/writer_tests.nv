@@ -53,12 +53,12 @@ fn same_reply(a: ?vtquery.AnsiReply, b: ?vtquery.AnsiReply) -> Bool
         None    => false
 
 // The last step of feeding a written buffer back through the parser.
-fn reparse(out: [u8]) -> vtparse.AnsiStep
+fn reparse(out: [u8]) -> vtcore.AnsiParser
     var p = vtparse.parser_new()
-    var last = vtparse.feed_byte(p, 0x00)
+    var last = vtparse.feed(p, 0x00)
     for b in out
-        last = vtparse.feed_byte(p, b as Int)
-        p = last.parser
+        last = vtparse.feed(p, b as Int)
+        p = last
     last
 
 // A style with one flag turned on, from the terminal's own default.
@@ -68,15 +68,15 @@ fn only(code: Int) -> sgr.SgrAttrs
 // The parameters of a `CSI <text> m`, as the parser collected them.
 fn params_of_csi(text: Str) -> vtparse.AnsiParams
     var p = vtparse.parser_new()
-    var last = vtparse.feed_byte(p, e())
-    p = last.parser
-    last = vtparse.feed_byte(p, 0x5B)
-    p = last.parser
+    var last = vtparse.feed(p, e())
+    p = last
+    last = vtparse.feed(p, 0x5B)
+    p = last
     for i in 0..str.len(text)
-        last = vtparse.feed_byte(p, str.byte_at_or(text, i, 0))
-        p = last.parser
-    last = vtparse.feed_byte(p, 0x6D)
-    vtparse.params_of(last.parser)
+        last = vtparse.feed(p, str.byte_at_or(text, i, 0))
+        p = last
+    last = vtparse.feed(p, 0x6D)
+    vtparse.params_of(last)
 
 // The attributes `CSI <text> m` folds onto the default.
 fn fold(text: Str) -> sgr.SgrAttrs
@@ -139,7 +139,7 @@ fn test_every_cursor_shape_is_its_own_decscusr() [io]
 
     test.case("and the space really is an intermediate when read back")
     let step = reparse(seqwrite.cursor_shape([], AnsiSteadyBar))
-    test.assert(vtparse.intermediate_at(step.parser, 0) == 0x20)
+    test.assert(vtparse.intermediate_at(step, 0) == 0x20)
 
 // ── Erasing and scrolling ───────────────────────────────────────────
 
@@ -233,9 +233,9 @@ fn test_setting_a_mode_writes_the_marker_or_leaves_it_out() [io]
     test.assert(same(seqwrite.reset_mode([], AnsiInsertMode), [e(), 0x5B, 0x34, 0x6C]))
 
     test.case("and the parser reads the marker back off each")
-    test.assert(vtparse.private_marker_of(reparse(seqwrite.set_mode([], AnsiAltScreen)).parser)
+    test.assert(vtparse.private_marker_of(reparse(seqwrite.set_mode([], AnsiAltScreen)))
                 == 0x3F)
-    test.assert(vtparse.private_marker_of(reparse(seqwrite.set_mode([], AnsiInsertMode)).parser)
+    test.assert(vtparse.private_marker_of(reparse(seqwrite.set_mode([], AnsiInsertMode)))
                 == vtparse.NO_PRIVATE_MARKER)
 
 // ── Text ────────────────────────────────────────────────────────────
@@ -261,7 +261,7 @@ fn test_a_codepoint_is_written_in_the_length_it_needs() [io]
     test.assert(same(seqwrite.put_codepoint([], 0xD800), fffd))
 
     test.case("every one of them reads back as the codepoint it was")
-    match reparse(seqwrite.put_codepoint([], 0x1F600)).action
+    match vtparse.action_of(reparse(seqwrite.put_codepoint([], 0x1F600)))
         AnsiPrint(ch) => test.assert(ch == 0x1F600)
         _             => test.assert(false)
 
@@ -323,9 +323,9 @@ fn test_an_osc_is_written_with_the_terminator_it_was_asked_for() [io]
     var p = vtparse.parser_new()
     var acc: [u8] = []
     for b in seqwrite.clipboard_write([], "c", "QUJD")
-        let step = vtparse.feed_byte(p, b as Int)
-        p = step.parser
-        let payload = osc_byte_of(step.action)
+        let step = vtparse.feed(p, b as Int)
+        p = step
+        let payload = osc_byte_of(vtparse.action_of(step))
         if payload >= 0
             acc = list.push(acc, payload as u8)
     match vtparse.osc_code(acc)
@@ -379,10 +379,10 @@ fn test_csi_params_round_trips_a_sequence_this_package_parsed() [io]
 
     test.case("and an intermediate rides along")
     var p = vtparse.parser_new()
-    var last = vtparse.feed_byte(p, 0x00)
+    var last = vtparse.feed(p, 0x00)
     for b in [e(), 0x5B, 0x32, 0x20, 0x71]
-        last = vtparse.feed_byte(p, b)
-        p = last.parser
+        last = vtparse.feed(p, b)
+        p = last
     test.assert(same(seqwrite.csi_params([], vtparse.params_of(p), 0x71),
                      [e(), 0x5B, 0x32, 0x20, 0x71]))
 
@@ -692,7 +692,7 @@ fn test_a_colon_only_underline_style_survives_the_writer() [io]
                      [e(), 0x5B, 0x34, 0x3A, 0x33, 0x6D]))
 
     test.case("and it reads back as the style it was")
-    match sgr.apply_sgr(plain, vtparse.params_of(reparse(seqwrite.sgr_change([], plain, curly)).parser))
+    match sgr.apply_sgr(plain, vtparse.params_of(reparse(seqwrite.sgr_change([], plain, curly))))
         a =>
             match a.underline
                 SgrCurlyUnderline => test.assert(true)
@@ -755,7 +755,7 @@ fn test_a_full_style_names_every_field_it_has() [io]
     test.case("and writing it and reading it back gives the same style")
     let written = seqwrite.csi_params([], sgr.sgr_full_sub(everything), 0x6D)
     let read = sgr.apply_sgr(sgr.attrs_default(),
-                             vtparse.params_of(reparse(written).parser))
+                             vtparse.params_of(reparse(written)))
     test.assert(sgr.attrs_eq(read, everything))
 
 // ── SGR: colours on their own ───────────────────────────────────────
@@ -1016,8 +1016,8 @@ fn osc_byte_of(a: vtparse.AnsiAction) -> Int
 // The reply a written buffer parses back into.
 fn read_back(out: [u8]) -> ?vtquery.AnsiReply
     let step = reparse(out)
-    match step.action
-        AnsiCsiDispatch(f) => vtquery.reply_of(step.parser, f)
+    match vtparse.action_of(step)
+        AnsiCsiDispatch(f) => vtquery.reply_of(step, f)
         _                  => None
 
 // The mode a parsed DECRPM answer named, or -1 for anything else.
@@ -1065,9 +1065,9 @@ fn test_a_reply_reads_the_same_off_a_snapshot_as_off_the_parser() [io]
     var agree = 0
     for out in written
         let step = reparse(out)
-        let f = final_byte_of(step.action)
-        if f >= 0 and same_reply(vtquery.reply_of(step.parser, f),
-                                 vtquery.reply_of_params(vtparse.params_of(step.parser), f))
+        let f = final_byte_of(vtparse.action_of(step))
+        if f >= 0 and same_reply(vtquery.reply_of(step, f),
+                                 vtquery.reply_of_params(vtparse.params_of(step), f))
             agree = agree + 1
 
     test.case("all six replies read the same both ways")

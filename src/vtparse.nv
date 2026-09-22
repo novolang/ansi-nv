@@ -1,37 +1,18 @@
-// vtparse.nv — the VT/xterm state machine, as a value that takes one
-// byte and hands back one action.
+// vtparse.nv — the state machine of `vtcore`, with its integers turned
+// into enums for a program on a host.
 //
-// The machine is Paul Williams' DEC parser ("A parser for DEC's
-// ANSI-compatible video terminals") with the four additions every
-// modern terminal needs.  They are UTF-8 decoding in the ground state,
-// colon sub-parameters inside a CSI (ITU-T T.416, which is how a curly
-// underline and its colour arrive), OSC strings terminated by either
-// BEL or ST, and a private marker kept separate from the intermediates
-// so that `CSI ? 1049 h` and `CSI 1049 h` cannot be confused.
+// `vtcore` is the machine.  It speaks integers alone, because an enum
+// is a tagged value and a list literal is a heap allocation, and an
+// `@tier(embedded)` function may have neither.  This module is the same
+// machine for a caller with a heap: `action_of` answers an
+// `AnsiAction`, `state_of` answers an `AnsiState`, and `params_of`
+// copies a dispatch's numbers into one value that can outlive the
+// parser.
 //
-// The parser is a value, and the rest of the design follows from it.  A
-// dispatch action names its final byte and nothing else, and the
-// numbers that came with it stay on the parser, read back through
-// `param_at` and its neighbours.  `feed_byte` returns the parser rather
-// than mutating one, so the value it returns still holds those numbers.
-// A caller may keep it, dispatch on the action, and read the parameters
-// at leisure, which a mutable parser cannot promise.  It is also what
-// keeps the byte path small, because `AnsiAction` carries at most one
-// integer and nothing beyond the parser and the step is allocated.
-//
-// A chunk may split anywhere.  There is no entry point that takes a
-// whole sequence, because a read from a pty ends where the kernel says
-// it ends.  That may be in the middle of a parameter list, between the
-// two bytes of a UTF-8 codepoint, or halfway through an OSC payload.
-// Every one of those is an ordinary rest position for this machine.
-//
-// A grid, a cursor, a scrollback and any notion of what a sequence
-// means are not here.  `CSI 2 J` arrives as
-// `AnsiCsiDispatch(final_byte: 0x4A)` with parameter 0 equal to 2, and
-// what to erase is the caller's model to change.  That separation is
-// what lets one parser serve a terminal emulator, a multiplexer, a log
-// scrubber and a device driving a serial console, without any of them
-// inheriting the others' idea of a screen.
+// The parser itself is `vtcore.AnsiParser`, and it is passed to and
+// from this module unchanged.  `feed` here and `vtcore.feed` are the
+// same function, so a program may read the action as an enum on one
+// byte and as an integer on the next.
 //
 // ```novo
 // use std.str
@@ -40,16 +21,17 @@
 // fn main() [io]
 //     var p = vtparse.parser_new()
 //     for b in [0x1B, 0x5B, 0x32, 0x3B, 0x31, 0x48]
-//         let step = vtparse.feed_byte(p, b)
-//         p = step.parser
-//         match step.action
+//         p = vtparse.feed(p, b)
+//         match vtparse.action_of(p)
 //             AnsiCsiDispatch(_) =>
 //                 // CUP: row 2, column 1, and the parameters are still
 //                 // readable off the parser the dispatch came with.
-//                 println(str.from_int(vtparse.param_at(step.parser, 0, 1)))
-//                 println(str.from_int(vtparse.param_at(step.parser, 1, 1)))
+//                 println(str.from_int(vtparse.param_at(p, 0, 1)))
+//                 println(str.from_int(vtparse.param_at(p, 1, 1)))
 //             _ => println("consumed")
 // ```
+
+use vtcore
 
 // AnsiState is where the machine is resting between bytes.
 //
@@ -118,7 +100,8 @@ pub enum AnsiTerminator
 // errors.  An unrecognised final byte is a sequence for a feature this
 // package does not cover, not a mistake.
 pub enum AnsiFault
-    // More parameters than `AnsiLimits.params_max`.
+    // More parameters than `AnsiLimits.params_max`, or more entries
+    // than `vtcore.ENTRY_CAP`.
     AnsiTooManyParams
     // More sub-parameters in one group than `AnsiLimits.subs_max`.
     AnsiTooManySubParams
@@ -127,22 +110,23 @@ pub enum AnsiFault
     // More intermediate bytes than `AnsiLimits.intermediates_max`.
     AnsiTooManyIntermediates
     // An OSC payload ran past `AnsiLimits.osc_bytes_max`.  The bytes
-    // already reported stand, and the rest of the string is consumed
-    // and dropped.
+    // already reported stand, the rest of the payload is dropped, and
+    // `AnsiOscEnd` still fires when the string ends.
     AnsiOscTooLong
-    // A DCS payload ran past `AnsiLimits.dcs_bytes_max`.
+    // A DCS payload ran past `AnsiLimits.dcs_bytes_max`, on the same
+    // terms.
     AnsiDcsTooLong
     // A UTF-8 sequence that is not one.  It is a continuation byte in
     // the ground state, a lead byte that promises more bytes than
-    // arrived, an overlong form, or a surrogate.  `REPLACEMENT_CHAR` is
-    // what the caller prints in its place.
+    // arrived, an overlong form, or a surrogate.
+    // `vtcore.REPLACEMENT_CHAR` is what the caller prints in its place.
     AnsiBadUtf8
 
 // AnsiAction is one thing the caller has to do about one byte.
 //
 // It is deliberately small.  At most one integer, no lists, and nothing
 // borrowed from the parser.  Everything a dispatch needs beyond its
-// final byte is read off the parser the step returned.  That is the
+// final byte is read off the parser the byte was fed to.  That is the
 // parameters, their sub-parameters, the intermediates and the private
 // marker.
 pub enum AnsiAction
@@ -170,9 +154,9 @@ pub enum AnsiAction
     // semicolon.  A caller accumulates the payload and reads it with
     // `osc_code` once `AnsiOscEnd` has fired.
     AnsiOscStart
-    // One byte of an OSC payload.  Reported a byte at a time so that
-    // an OSC 52 clipboard payload of any length costs the parser
-    // nothing to carry.
+    // One byte of an OSC payload.  Reported a byte at a time so that an
+    // OSC 52 clipboard payload of any length costs the parser nothing
+    // to carry.
     AnsiOscPut(byte: Int)
     // The OSC string ended, and how.
     AnsiOscEnd(terminator: AnsiTerminator)
@@ -183,94 +167,34 @@ pub enum AnsiAction
     AnsiDcsPut(byte: Int)
     // The DCS string ended, and how.
     AnsiDcsEnd(terminator: AnsiTerminator)
-    // The incoming bytes broke a limit.  The sequence is dropped and
-    // the machine carries on.
+    // The incoming bytes broke a rule.  The sequence is dropped and the
+    // machine carries on.
     AnsiRefused(why: AnsiFault)
 
-// AnsiLimits is the ceiling on everything the parser has to remember.
+// AnsiParams is a snapshot of everything a dispatch came with, as one
+// value a caller may keep.
 //
-// A parser with no ceiling is a parser a hostile stream can grow
-// without bound, and a `core` package cannot decide for its caller how
-// much memory that caller has.  Every bound is therefore a number the
-// caller sets.  `default_limits` is what a terminal emulator wants, and
-// `strict_limits` is what a device with kilobytes wants.
-pub struct AnsiLimits
-    // Parameters in one CSI or DCS.  xterm keeps 30, and ECMA-48 sets
-    // no limit.
-    params_max: Int
-    // Sub-parameters in one colon-separated group.  Six covers `4:3`
-    // and `38:2::R:G:B`, which is every form in use.
-    subs_max: Int
-    // The largest value one parameter may hold.  A larger one is a
-    // fault rather than a wrap, because a wrapped 65536 is a cursor
-    // move to somewhere nobody asked for.
-    param_max: Int
-    // Intermediate bytes kept per sequence.  Two is every sequence
-    // ECMA-48 defines.
-    intermediates_max: Int
-    // Bytes of OSC payload reported before `AnsiOscTooLong`.
-    osc_bytes_max: Int
-    // Bytes of DCS payload reported before `AnsiDcsTooLong`.
-    dcs_bytes_max: Int
-
-// AnsiParser is the machine.  It holds a state, the numbers collected
-// so far, and the counters that enforce the limits.
-//
-// It is a value.  `feed_byte` takes one and returns one, so a caller
-// may hold the parser a dispatch fired with, read its parameters, and
-// keep feeding a different copy.  That is what makes reading the
-// parameters afterwards a property of the type rather than a
-// convention.
-pub struct AnsiParser
-    state: AnsiState
-    limits: AnsiLimits
-    // One entry per parameter, in the order they arrived.  A parameter
-    // the sequence left empty, such as the two in `CSI ; ; H`, is
-    // `PARAM_EMPTY`.  Absent and zero therefore stay different answers,
-    // and `param_at`'s fallback can do its job.
+// The byte path does not need it, because `param_at` reads the parser
+// directly and the parser is cheap to hold.  It exists for `drain`,
+// which hands back a list of actions the caller will look at after the
+// parser has moved on, and for `sgr.apply_sgr`, which wants the whole
+// parameter list as one argument.
+pub struct AnsiParams
+    // One entry per parameter, in the order they arrived, with
+    // `PARAM_EMPTY` for a parameter the sequence left empty.
     values: [Int]
     // The group each entry of `values` belongs to.  Colon-separated
     // sub-parameters share a group and semicolon-separated ones do not,
-    // so `38:2::1:2:3;4` is groups `0 0 0 0 0 0` then `1`.  A flat pair
-    // of lists rather than a list of lists, because a sub-parameter is
-    // a rarity and a nested allocation per CSI is not.
+    // so `38:2::1:2:3;4` is groups `0 0 0 0 0 0` then `1`.
     groups: [Int]
     // The intermediate bytes, 0x20..0x2F, in order.
     intermediates: [Int]
-    // The private marker, 0x3C..0x3F, which is `<`, `=`, `>` or `?`.
-    // It is `NO_PRIVATE_MARKER` when the sequence had none.
-    private_marker: Int
-    // Bytes of the current string payload already reported, against
-    // the OSC and DCS ceilings.
-    string_bytes: Int
-    // The partly-assembled codepoint and how many continuation bytes
-    // it still owes.
-    utf8_value: Int
-    utf8_owed: Int
-
-// AnsiStep is one byte's worth of progress.  It carries the parser
-// afterwards and what the caller has to do about the byte.
-pub struct AnsiStep
-    parser: AnsiParser
-    action: AnsiAction
-
-// AnsiParams is a snapshot of everything a dispatch came with, as one
-// value.
-//
-// The byte-at-a-time path does not need it, because `param_at` reads
-// the parser directly.  It exists for `feed`, which hands back a list
-// of actions the caller will look at after the parser has moved on, and
-// for `sgr.apply_sgr`, which wants the whole parameter list as one
-// argument.
-pub struct AnsiParams
-    values: [Int]
-    groups: [Int]
-    intermediates: [Int]
+    // The private marker, or `NO_PRIVATE_MARKER`.
     private_marker: Int
 
 // AnsiCall is one action and the parameters it fired with.
 //
-// This is the pairing `feed` exists to make.  An action alone is not
+// This is the pairing `drain` exists to make.  An action alone is not
 // enough once the parser has moved past it, so the chunk path copies
 // the numbers out at the moment of the dispatch.  That copy is the
 // difference in cost between the two entry points, and it is what makes
@@ -282,121 +206,80 @@ pub struct AnsiCall
 // AnsiDrained is a whole chunk's worth of calls and the parser left
 // over.
 pub struct AnsiDrained
-    parser: AnsiParser
+    parser: vtcore.AnsiParser
     calls: [AnsiCall]
 
-// The value `param_at` sees for a parameter the sequence left empty,
-// as in the two empty slots of `CSI ; ; H`.
+// The fallback a caller passes to `param_at` to tell an absent
+// parameter from a zero one, and what an empty slot of an `AnsiParams`
+// snapshot holds.
 pub const PARAM_EMPTY = 0 - 1
 
-// The value `private_marker_of` returns for a sequence that had none.
+// What `private_marker_of` answers for a sequence that had no private
+// marker.
 pub const NO_PRIVATE_MARKER = 0
 
 // The codepoint a caller substitutes after `AnsiBadUtf8`.  It is
 // U+FFFD, the replacement character.
 pub const REPLACEMENT_CHAR = 0xFFFD
 
-// ── The machinery behind the surface ────────────────────────────────
+// ── The integers, as enums ──────────────────────────────────────────
+
+// The state an `ST_` code names.
+fn state_of_code(c: Int) -> AnsiState
+    if c == vtcore.ST_ESCAPE
+        AnsiEscape
+    else if c == vtcore.ST_ESCAPE_INTERMEDIATE
+        AnsiEscapeIntermediate
+    else if c == vtcore.ST_CSI_ENTRY
+        AnsiCsiEntry
+    else if c == vtcore.ST_CSI_PARAM
+        AnsiCsiParam
+    else if c == vtcore.ST_CSI_INTERMEDIATE
+        AnsiCsiIntermediate
+    else if c == vtcore.ST_CSI_IGNORE
+        AnsiCsiIgnore
+    else if c == vtcore.ST_OSC_STRING
+        AnsiOscString
+    else if c == vtcore.ST_DCS_PARAM
+        AnsiDcsParam
+    else if c == vtcore.ST_DCS_PASSTHROUGH
+        AnsiDcsPassthrough
+    else if c == vtcore.ST_IGNORED_STRING
+        AnsiIgnoredString
+    else if c == vtcore.ST_UTF8_CONTINUATION
+        AnsiUtf8Continuation
+    else
+        AnsiGround
+
+// The fault a `FAULT_` code names.
+fn fault_of_code(c: Int) -> AnsiFault
+    if c == vtcore.FAULT_TOO_MANY_SUB_PARAMS
+        AnsiTooManySubParams
+    else if c == vtcore.FAULT_PARAM_TOO_LARGE
+        AnsiParamTooLarge
+    else if c == vtcore.FAULT_TOO_MANY_INTERMEDIATES
+        AnsiTooManyIntermediates
+    else if c == vtcore.FAULT_OSC_TOO_LONG
+        AnsiOscTooLong
+    else if c == vtcore.FAULT_DCS_TOO_LONG
+        AnsiDcsTooLong
+    else if c == vtcore.FAULT_BAD_UTF8
+        AnsiBadUtf8
+    else
+        AnsiTooManyParams
+
+// The terminator a `TERM_` code names.
+fn terminator_of_code(c: Int) -> AnsiTerminator
+    if c == vtcore.TERM_ST
+        AnsiStTerminated
+    else
+        AnsiBelTerminated
+
+// ── Reading a snapshot ──────────────────────────────────────────────
 //
-// Nothing below this line is `pub`.  It is the state machine itself,
-// which is Williams' transition table with the four additions named at
-// the top of this file, plus the small constructors that every arm of
-// it returns through.
-//
-// Each of those constructors builds a fresh struct literal rather than
-// assigning a field of a copy.  On this toolchain `var q = p` followed
-// by `q.field = v` writes through to the caller's struct (novo bug
-// lang/struct-field-assignment-aliases-the-caller), which would break
-// the property that the parser a dispatch fired with still holds the
-// parameters it fired with.  A literal is correct today and stays
-// correct when that defect is fixed.
-
-// The parser in `s`, carrying everything else unchanged.
-fn at(p: AnsiParser, s: AnsiState) -> AnsiStep
-    AnsiStep { parser: AnsiParser { state: s, limits: p.limits, values: p.values,
-                                    groups: p.groups, intermediates: p.intermediates,
-                                    private_marker: p.private_marker,
-                                    string_bytes: p.string_bytes,
-                                    utf8_value: p.utf8_value, utf8_owed: p.utf8_owed },
-               action: AnsiNothing }
-
-// The parser in `s` with one action to report, and nothing else moved.
-fn act(p: AnsiParser, s: AnsiState, a: AnsiAction) -> AnsiStep
-    AnsiStep { parser: AnsiParser { state: s, limits: p.limits, values: p.values,
-                                    groups: p.groups, intermediates: p.intermediates,
-                                    private_marker: p.private_marker,
-                                    string_bytes: p.string_bytes,
-                                    utf8_value: p.utf8_value, utf8_owed: p.utf8_owed },
-               action: a }
-
-// The parser in `s` with every buffer emptied.  It is what `ESC`,
-// `ESC [`, `ESC P` and `reset` all need, and what makes a sequence's
-// numbers belong to that sequence alone.
-fn cleared(p: AnsiParser, s: AnsiState, a: AnsiAction) -> AnsiStep
-    AnsiStep { parser: AnsiParser { state: s, limits: p.limits, values: [], groups: [],
-                                    intermediates: [], private_marker: NO_PRIVATE_MARKER,
-                                    string_bytes: 0, utf8_value: 0, utf8_owed: 0 },
-               action: a }
-
-// The parser in `s` with new parameter lists.
-fn with_params(p: AnsiParser, s: AnsiState, values: [Int], groups: [Int], a: AnsiAction) -> AnsiStep
-    AnsiStep { parser: AnsiParser { state: s, limits: p.limits, values: values,
-                                    groups: groups, intermediates: p.intermediates,
-                                    private_marker: p.private_marker,
-                                    string_bytes: p.string_bytes,
-                                    utf8_value: p.utf8_value, utf8_owed: p.utf8_owed },
-               action: a }
-
-// The parser in `s` with one more intermediate byte.
-fn with_intermediates(p: AnsiParser, s: AnsiState, inter: [Int]) -> AnsiStep
-    AnsiStep { parser: AnsiParser { state: s, limits: p.limits, values: p.values,
-                                    groups: p.groups, intermediates: inter,
-                                    private_marker: p.private_marker,
-                                    string_bytes: p.string_bytes,
-                                    utf8_value: p.utf8_value, utf8_owed: p.utf8_owed },
-               action: AnsiNothing }
-
-// The parser with its private marker recorded.
-fn with_marker(p: AnsiParser, marker: Int) -> AnsiStep
-    AnsiStep { parser: AnsiParser { state: p.state, limits: p.limits, values: p.values,
-                                    groups: p.groups, intermediates: p.intermediates,
-                                    private_marker: marker,
-                                    string_bytes: p.string_bytes,
-                                    utf8_value: p.utf8_value, utf8_owed: p.utf8_owed },
-               action: AnsiNothing }
-
-// The parser in `s` part-way through a string sequence.
-//
-// `utf8_owed` carries the string's pending ESC while the machine is in
-// one of the three string states.  It is 1 after an ESC that may yet be
-// the first byte of ST, and 0 otherwise.  The field is free there,
-// because no UTF-8 codepoint is in flight inside an OSC or a DCS
-// payload, and the published `AnsiParser` has no field of its own for
-// it.  Naming the reuse here is cheaper than a breaking change to a
-// struct seven packages already depend on.
-fn with_string(p: AnsiParser, s: AnsiState, seen: Int, esc_pending: Int, a: AnsiAction) -> AnsiStep
-    AnsiStep { parser: AnsiParser { state: s, limits: p.limits, values: p.values,
-                                    groups: p.groups, intermediates: p.intermediates,
-                                    private_marker: p.private_marker,
-                                    string_bytes: seen, utf8_value: 0,
-                                    utf8_owed: esc_pending },
-               action: a }
-
-// The parser in `s` part-way through a codepoint.
-fn with_utf8(p: AnsiParser, s: AnsiState, value: Int, owed: Int, a: AnsiAction) -> AnsiStep
-    AnsiStep { parser: AnsiParser { state: s, limits: p.limits, values: p.values,
-                                    groups: p.groups, intermediates: p.intermediates,
-                                    private_marker: p.private_marker,
-                                    string_bytes: p.string_bytes,
-                                    utf8_value: value, utf8_owed: owed },
-               action: a }
-
-// ── Reading a parameter list ────────────────────────────────────────
-//
-// The four readers below are the whole of what `param_at` and its
-// neighbours are, and the snapshot accessors call the same four.  So
-// `params_at(params_of(p), i, d)` and `param_at(p, i, d)` cannot come
-// to different answers, which is the one bug a second copy would have.
+// The four readers below are what `params_count` and its neighbours
+// are.  They answer from the group list, so a snapshot and the parser
+// it was copied from cannot come to different answers.
 
 // How many parameters a group list describes.  A group number is
 // assigned in order from 0, so the last one plus one is the count.
@@ -407,8 +290,8 @@ fn count_of(groups: [Int]) -> Int
     else
         list.get(groups, n - 1) + 1
 
-// Where group `g` starts in the flat list, or -1 when there is no
-// such group.
+// Where group `g` starts in the flat list, or -1 when there is no such
+// group.
 fn group_start(groups: [Int], g: Int) -> Int
     for k in 0..list.len(groups)
         if list.get(groups, k) == g
@@ -449,431 +332,148 @@ fn sub_at_of(values: [Int], groups: [Int], i: Int, j: Int, fallback: Int) -> Int
         else
             v
 
-// The list with its last entry replaced.  A copy rather than an index
-// assignment, because `xs[i] = v` writes into the buffer a parser the
-// caller may still be holding shares with this one.
-fn replaced_last(xs: [Int], v: Int) -> [Int]
-    list.push(list.slice(xs, 0, list.len(xs) - 1), v)
-
-// ── Collecting a parameter list ─────────────────────────────────────
-
-// One digit of the parameter currently open, or the first digit of a
-// parameter this digit opens.
-fn param_digit(p: AnsiParser, s: AnsiState, d: Int) -> AnsiStep
-    let n = list.len(p.values)
-    if n == 0
-        if p.limits.params_max < 1
-            act(p, AnsiCsiIgnore, AnsiRefused(AnsiTooManyParams))
-        else
-            with_params(p, s, list.push(p.values, d), list.push(p.groups, 0), AnsiNothing)
-    else
-        let last = list.get(p.values, n - 1)
-        let v = if last == PARAM_EMPTY
-            d
-        else
-            last * 10 + d
-        if v > p.limits.param_max
-            act(p, AnsiCsiIgnore, AnsiRefused(AnsiParamTooLarge))
-        else
-            with_params(p, s, replaced_last(p.values, v), p.groups, AnsiNothing)
-
-// A semicolon closes the group that was open and opens the next one.
-//
-// A semicolon with nothing before it opens two slots.  They are the
-// empty parameter it terminated and the one it begins, which is what
-// keeps `CSI ; 5 H`'s first parameter an absence rather than a zero.
-fn param_next_group(p: AnsiParser, s: AnsiState) -> AnsiStep
-    var values = p.values
-    var groups = p.groups
-    if list.len(values) == 0
-        values = list.push(values, PARAM_EMPTY)
-        groups = list.push(groups, 0)
-    let g = list.get(groups, list.len(groups) - 1) + 1
-    if g >= p.limits.params_max
-        act(p, AnsiCsiIgnore, AnsiRefused(AnsiTooManyParams))
-    else
-        with_params(p, s, list.push(values, PARAM_EMPTY), list.push(groups, g), AnsiNothing)
-
-// A colon opens another slot inside the group that is already open.
-fn param_next_sub(p: AnsiParser, s: AnsiState) -> AnsiStep
-    var values = p.values
-    var groups = p.groups
-    if list.len(values) == 0
-        values = list.push(values, PARAM_EMPTY)
-        groups = list.push(groups, 0)
-    let g = list.get(groups, list.len(groups) - 1)
-    if sub_count_of(groups, g) >= p.limits.subs_max
-        act(p, AnsiCsiIgnore, AnsiRefused(AnsiTooManySubParams))
-    else
-        with_params(p, s, list.push(values, PARAM_EMPTY), list.push(groups, g), AnsiNothing)
-
-// One intermediate byte, 0x20..0x2F.
-fn collect_intermediate(p: AnsiParser, s: AnsiState, b: Int) -> AnsiStep
-    if list.len(p.intermediates) >= p.limits.intermediates_max
-        act(p, AnsiCsiIgnore, AnsiRefused(AnsiTooManyIntermediates))
-    else
-        with_intermediates(p, s, list.push(p.intermediates, b))
-
-// ── The states ──────────────────────────────────────────────────────
-
-// The ground state, where a byte is text, a C0 control, or the ESC
-// that starts a sequence.
-//
-// A byte at 0x80 or above is the lead of a UTF-8 codepoint rather than
-// a C1 control.  Every stream this package is pointed at is UTF-8, and
-// a terminal that read 0xC3 as a C1 would print two replacement
-// characters for every accented letter.
-fn ground(p: AnsiParser, b: Int) -> AnsiStep
-    if b == 0x1B
-        cleared(p, AnsiEscape, AnsiNothing)
-    else if b < 0x20
-        act(p, AnsiGround, AnsiExecute(b))
-    else if b < 0x7F
-        act(p, AnsiGround, AnsiPrint(b))
-    else if b == 0x7F
-        act(p, AnsiGround, AnsiNothing)
-    else
-        utf8_lead(p, b)
-
-// A UTF-8 lead byte.  0xC0 and 0xC1 would only ever begin an overlong
-// two-byte form, and 0xF5..0xFF a codepoint past U+10FFFF, so both are
-// refused where they arrive rather than at the end of the sequence.
-fn utf8_lead(p: AnsiParser, b: Int) -> AnsiStep
-    if b >= 0xC2 and b <= 0xDF
-        with_utf8(p, AnsiUtf8Continuation, b - 0xC0, 1, AnsiNothing)
-    else if b >= 0xE0 and b <= 0xEF
-        with_utf8(p, AnsiUtf8Continuation, b - 0xE0, 2, AnsiNothing)
-    else if b >= 0xF0 and b <= 0xF4
-        with_utf8(p, AnsiUtf8Continuation, b - 0xF0, 3, AnsiNothing)
-    else
-        act(p, AnsiGround, AnsiRefused(AnsiBadUtf8))
-
-// Whether the first continuation byte is one this lead may take.
-//
-// Four leads have a narrower second byte than 0x80..0xBF.  Checking
-// them here is what makes an overlong form and a surrogate impossible
-// to spell, rather than caught afterwards.  0xE0 may not be followed by
-// 0x80..0x9F, which is overlong.  0xED may not be followed by
-// 0xA0..0xBF, which is a surrogate.  0xF0 may not be followed by
-// 0x80..0x8F, which is overlong.  0xF4 may not be followed by
-// 0x90..0xBF, which is past U+10FFFF.  Unicode 15 § 3.9, table 3-7.
-fn utf8_first_ok(value: Int, owed: Int, b: Int) -> Bool
-    if owed == 2 and value == 0x00 and b < 0xA0
-        false
-    else if owed == 2 and value == 0x0D and b > 0x9F
-        false
-    else if owed == 3 and value == 0x00 and b < 0x90
-        false
-    else if owed == 3 and value == 0x04 and b > 0x8F
-        false
-    else
-        true
-
-// Part-way through a codepoint.
-//
-// A byte that is not a continuation aborts the partial codepoint and is
-// read again from the ground state, which is what novo-vte's parser did
-// and what xterm does.  The alternative loses an ESC that arrived one
-// byte after a truncated sequence, and a lost ESC is how a terminal
-// prints a control sequence as text.
-fn utf8_continuation(p: AnsiParser, b: Int) -> AnsiStep
-    if b < 0x80 or b > 0xBF
-        ground(AnsiParser { state: AnsiGround, limits: p.limits, values: p.values,
-                            groups: p.groups, intermediates: p.intermediates,
-                            private_marker: p.private_marker,
-                            string_bytes: p.string_bytes, utf8_value: 0,
-                            utf8_owed: 0 },
-                            b)
-    else if p.utf8_owed > 1 and utf8_first_ok(p.utf8_value, p.utf8_owed, b) == false
-        with_utf8(p, AnsiGround, 0, 0, AnsiRefused(AnsiBadUtf8))
-    else
-        let v = p.utf8_value * 64 + (b - 0x80)
-        if p.utf8_owed > 1
-            with_utf8(p, AnsiUtf8Continuation, v, p.utf8_owed - 1, AnsiNothing)
-        else
-            with_utf8(p, AnsiGround, 0, 0, AnsiPrint(v))
-
-// ESC has arrived and this byte says what kind of sequence it is.
-fn escape(p: AnsiParser, b: Int) -> AnsiStep
-    if b == 0x5B
-        cleared(p, AnsiCsiEntry, AnsiNothing)
-    else if b == 0x5D
-        cleared(p, AnsiOscString, AnsiOscStart)
-    else if b == 0x50
-        cleared(p, AnsiDcsParam, AnsiNothing)
-    else if b == 0x58 or b == 0x5E or b == 0x5F
-        cleared(p, AnsiIgnoredString, AnsiNothing)
-    else if b >= 0x20 and b <= 0x2F
-        collect_intermediate(p, AnsiEscapeIntermediate, b)
-    else if b >= 0x30 and b <= 0x7E
-        act(p, AnsiGround, AnsiEscDispatch(b))
-    else if b == 0x1B
-        cleared(p, AnsiEscape, AnsiNothing)
-    else if b < 0x20
-        act(p, AnsiEscape, AnsiExecute(b))
-    else if b == 0x7F
-        act(p, AnsiEscape, AnsiNothing)
-    else
-        act(p, AnsiGround, AnsiNothing)
-
-// ESC with intermediates collected, as in `ESC ( B` and its
-// neighbours.
-fn escape_intermediate(p: AnsiParser, b: Int) -> AnsiStep
-    if b >= 0x20 and b <= 0x2F
-        collect_intermediate(p, AnsiEscapeIntermediate, b)
-    else if b >= 0x30 and b <= 0x7E
-        act(p, AnsiGround, AnsiEscDispatch(b))
-    else if b == 0x1B
-        cleared(p, AnsiEscape, AnsiNothing)
-    else if b < 0x20
-        act(p, AnsiEscapeIntermediate, AnsiExecute(b))
-    else
-        act(p, AnsiGround, AnsiNothing)
-
-// CSI, before any parameter byte.  It is the one place the private
-// marker may still arrive.
-fn csi_entry(p: AnsiParser, b: Int) -> AnsiStep
-    if b >= 0x30 and b <= 0x39
-        param_digit(p, AnsiCsiParam, b - 0x30)
-    else if b == 0x3B
-        param_next_group(p, AnsiCsiParam)
-    else if b == 0x3A
-        param_next_sub(p, AnsiCsiParam)
-    else if b >= 0x3C and b <= 0x3F
-        with_marker(p, b)
-    else if b >= 0x20 and b <= 0x2F
-        collect_intermediate(p, AnsiCsiIntermediate, b)
-    else if b >= 0x40 and b <= 0x7E
-        act(p, AnsiGround, AnsiCsiDispatch(b))
-    else if b == 0x1B
-        cleared(p, AnsiEscape, AnsiNothing)
-    else if b < 0x20
-        act(p, AnsiCsiEntry, AnsiExecute(b))
-    else
-        act(p, AnsiCsiEntry, AnsiNothing)
-
-// Inside the parameter list.  A private marker here is out of order,
-// because `CSI 1 ? h` is not a sequence, so the rest is consumed and
-// dropped rather than half-applied.
-fn csi_param(p: AnsiParser, b: Int) -> AnsiStep
-    if b >= 0x30 and b <= 0x39
-        param_digit(p, AnsiCsiParam, b - 0x30)
-    else if b == 0x3B
-        param_next_group(p, AnsiCsiParam)
-    else if b == 0x3A
-        param_next_sub(p, AnsiCsiParam)
-    else if b >= 0x3C and b <= 0x3F
-        at(p, AnsiCsiIgnore)
-    else if b >= 0x20 and b <= 0x2F
-        collect_intermediate(p, AnsiCsiIntermediate, b)
-    else if b >= 0x40 and b <= 0x7E
-        act(p, AnsiGround, AnsiCsiDispatch(b))
-    else if b == 0x1B
-        cleared(p, AnsiEscape, AnsiNothing)
-    else if b < 0x20
-        act(p, AnsiCsiParam, AnsiExecute(b))
-    else
-        act(p, AnsiCsiParam, AnsiNothing)
-
-// Past the parameters, collecting intermediates, as in `CSI 2 SP q`.
-fn csi_intermediate(p: AnsiParser, b: Int) -> AnsiStep
-    if b >= 0x20 and b <= 0x2F
-        collect_intermediate(p, AnsiCsiIntermediate, b)
-    else if b >= 0x30 and b <= 0x3F
-        at(p, AnsiCsiIgnore)
-    else if b >= 0x40 and b <= 0x7E
-        act(p, AnsiGround, AnsiCsiDispatch(b))
-    else if b == 0x1B
-        cleared(p, AnsiEscape, AnsiNothing)
-    else if b < 0x20
-        act(p, AnsiCsiIntermediate, AnsiExecute(b))
-    else
-        act(p, AnsiCsiIntermediate, AnsiNothing)
-
-// A sequence that has already broken a rule.  Consume to the final byte
-// and drop it.
-fn csi_ignore(p: AnsiParser, b: Int) -> AnsiStep
-    if b >= 0x40 and b <= 0x7E
-        act(p, AnsiGround, AnsiNothing)
-    else if b == 0x1B
-        cleared(p, AnsiEscape, AnsiNothing)
-    else
-        act(p, AnsiCsiIgnore, AnsiNothing)
-
-// One byte of an OSC payload, against the ceiling.
-fn osc_payload(p: AnsiParser, b: Int) -> AnsiStep
-    if p.string_bytes >= p.limits.osc_bytes_max
-        act(p, AnsiIgnoredString, AnsiRefused(AnsiOscTooLong))
-    else
-        with_string(p, AnsiOscString, p.string_bytes + 1, 0, AnsiOscPut(b))
-
-// Inside an OSC string.  Either terminator ends it, and the one that
-// did is reported.  A stray ESC that is not followed by a backslash is
-// dropped and the byte after it is payload, which is what xterm does.
-fn osc_string(p: AnsiParser, b: Int) -> AnsiStep
-    if p.utf8_owed == 1
-        if b == 0x5C
-            cleared(p, AnsiGround, AnsiOscEnd(AnsiStTerminated))
-        else
-            osc_payload(AnsiParser { state: AnsiOscString, limits: p.limits,
-                                     values: p.values, groups: p.groups,
-                                     intermediates: p.intermediates,
-                                     private_marker: p.private_marker,
-                                     string_bytes: p.string_bytes, utf8_value: 0,
-                                     utf8_owed: 0 },
-                                     b)
-    else if b == 0x07
-        cleared(p, AnsiGround, AnsiOscEnd(AnsiBelTerminated))
-    else if b == 0x1B
-        with_string(p, AnsiOscString, p.string_bytes, 1, AnsiNothing)
-    else
-        osc_payload(p, b)
-
-// A DCS's parameter list, which has a CSI's shape exactly.
-fn dcs_param(p: AnsiParser, b: Int) -> AnsiStep
-    if b >= 0x30 and b <= 0x39
-        param_digit(p, AnsiDcsParam, b - 0x30)
-    else if b == 0x3B
-        param_next_group(p, AnsiDcsParam)
-    else if b == 0x3A
-        param_next_sub(p, AnsiDcsParam)
-    else if b >= 0x3C and b <= 0x3F
-        with_marker(p, b)
-    else if b >= 0x20 and b <= 0x2F
-        collect_intermediate(p, AnsiDcsParam, b)
-    else if b >= 0x40 and b <= 0x7E
-        with_string(p, AnsiDcsPassthrough, 0, 0, AnsiDcsStart(b))
-    else if b == 0x1B
-        cleared(p, AnsiEscape, AnsiNothing)
-    else
-        act(p, AnsiDcsParam, AnsiNothing)
-
-// One byte of a DCS payload, against the ceiling.
-fn dcs_payload(p: AnsiParser, b: Int) -> AnsiStep
-    if p.string_bytes >= p.limits.dcs_bytes_max
-        act(p, AnsiIgnoredString, AnsiRefused(AnsiDcsTooLong))
-    else
-        with_string(p, AnsiDcsPassthrough, p.string_bytes + 1, 0, AnsiDcsPut(b))
-
-// Inside a DCS payload.
-fn dcs_passthrough(p: AnsiParser, b: Int) -> AnsiStep
-    if p.utf8_owed == 1
-        if b == 0x5C
-            cleared(p, AnsiGround, AnsiDcsEnd(AnsiStTerminated))
-        else
-            dcs_payload(AnsiParser { state: AnsiDcsPassthrough, limits: p.limits,
-                                     values: p.values, groups: p.groups,
-                                     intermediates: p.intermediates,
-                                     private_marker: p.private_marker,
-                                     string_bytes: p.string_bytes, utf8_value: 0,
-                                     utf8_owed: 0 },
-                                     b)
-    else if b == 0x07
-        cleared(p, AnsiGround, AnsiDcsEnd(AnsiBelTerminated))
-    else if b == 0x1B
-        with_string(p, AnsiDcsPassthrough, p.string_bytes, 1, AnsiNothing)
-    else
-        dcs_payload(p, b)
-
-// SOS, PM and APC, and the tail of a string that broke its ceiling.
-// They are consumed and never reported, so that a payload cannot reach
-// the ground state and be re-read as text.
-fn ignored_string(p: AnsiParser, b: Int) -> AnsiStep
-    if p.utf8_owed == 1
-        if b == 0x5C
-            cleared(p, AnsiGround, AnsiNothing)
-        else
-            with_string(p, AnsiIgnoredString, p.string_bytes, 0, AnsiNothing)
-    else if b == 0x07
-        cleared(p, AnsiGround, AnsiNothing)
-    else if b == 0x1B
-        with_string(p, AnsiIgnoredString, p.string_bytes, 1, AnsiNothing)
-    else
-        act(p, AnsiIgnoredString, AnsiNothing)
-
-// Whether an action is the one `feed` leaves out of its list.
+// Whether an action is the one `drain` leaves out of its list.
 fn is_nothing(a: AnsiAction) -> Bool
     match a
         AnsiNothing => true
         _           => false
 
-// default_limits is what a terminal emulator on a machine with memory
-// wants.  It allows 32 parameters, 6 sub-parameters, values to 65535,
-// 2 intermediates and payloads to 4096 bytes.
-pub fn default_limits() -> AnsiLimits
-    AnsiLimits { params_max: 32, subs_max: 6, param_max: 65535, intermediates_max: 2,
-                 osc_bytes_max: 4096, dcs_bytes_max: 4096 }
+// ── The parser, for a caller with a heap ────────────────────────────
 
-// strict_limits is what a device with kilobytes wants.  It allows 8
-// parameters, 4 sub-parameters, values to 4095, 2 intermediates and
-// payloads to 128 bytes.
+// default_limits is `vtcore.default_limits`: 16 parameters, 6
+// sub-parameters, values to 65534, 2 intermediates and payloads to 4096
+// bytes.
 //
-// The payload ceilings are the ones that matter.  An OSC 52 paste from
-// a hostile peer is unbounded, and on a serial console there is nowhere
-// to put it.
-pub fn strict_limits() -> AnsiLimits
-    AnsiLimits { params_max: 8, subs_max: 4, param_max: 4095, intermediates_max: 2,
-                 osc_bytes_max: 128, dcs_bytes_max: 128 }
+// ```novo
+// use vtparse
+//
+// fn main() [io]
+//     println("${vtparse.default_limits().params_max as Int}")   // 16
+// ```
+pub fn default_limits() -> vtcore.AnsiLimits
+    vtcore.default_limits()
+
+// strict_limits is `vtcore.strict_limits`: 8 parameters, 4
+// sub-parameters, values to 4095, 2 intermediates and payloads to 128
+// bytes.
+//
+// ```novo
+// use vtparse
+//
+// fn main() [io]
+//     println("${vtparse.strict_limits().params_max as Int}")   // 8
+// ```
+pub fn strict_limits() -> vtcore.AnsiLimits
+    vtcore.strict_limits()
 
 // parser_new is a parser in the ground state with `default_limits`.
-pub fn parser_new() -> AnsiParser
-    parser_with(default_limits())
+//
+// ```novo
+// use vtparse
+//
+// fn main() [io]
+//     println("${vtparse.is_settled(vtparse.parser_new())}")   // true
+// ```
+pub fn parser_new() -> vtcore.AnsiParser
+    vtcore.parser_new()
 
-// parser_with is a parser in the ground state with the limits given.
-pub fn parser_with(limits: AnsiLimits) -> AnsiParser
-    AnsiParser { state: AnsiGround, limits: limits, values: [], groups: [],
-                 intermediates: [], private_marker: NO_PRIVATE_MARKER, string_bytes: 0,
-                 utf8_value: 0, utf8_owed: 0 }
+// parser_with is a parser in the ground state with the limits given,
+// each held to the package's own capacity.
+//
+// ```novo
+// use vtparse
+//
+// fn main() [io]
+//     let p = vtparse.parser_with(vtparse.strict_limits())
+//     println("${vtparse.limits_of(p).subs_max as Int}")   // 4
+// ```
+pub fn parser_with(limits: vtcore.AnsiLimits) -> vtcore.AnsiParser
+    vtcore.parser_with(limits)
 
-// feed_byte advances the machine by one byte and says what to do about
+// feed advances the machine by one byte and answers the parser after
 // it.
 //
 // This is the entry point everything else is written over.  It copies
-// no parameter list, so what one byte costs is the parser it answers
-// and the step that carries it.  A chunk boundary anywhere is an
-// ordinary rest position.  Feed the last byte of one read, keep the
-// parser, and feed it the first byte of the next.
+// no parameter list and allocates nothing.  What the byte asked for is
+// read off the parser with `action_of`, and so are the numbers a
+// dispatch came with.  A chunk boundary anywhere is an ordinary rest
+// position: feed the last byte of one read, keep the parser, and feed
+// it the first byte of the next.
 //
 // ```novo
 // use std.str
 // use vtparse
 //
 // fn main() [io]
-//     let p = vtparse.parser_new()
-//     let step = vtparse.feed_byte(p, 0x41)
-//     match step.action
+//     let p = vtparse.feed(vtparse.parser_new(), 0x41)
+//     match vtparse.action_of(p)
 //         AnsiPrint(ch) => println(str.from_int(ch))
 //         _             => println("not a printable")
 // ```
-pub fn feed_byte(p: AnsiParser, b: Int) -> AnsiStep
-    match p.state
-        AnsiGround             => ground(p, b)
-        AnsiEscape             => escape(p, b)
-        AnsiEscapeIntermediate => escape_intermediate(p, b)
-        AnsiCsiEntry           => csi_entry(p, b)
-        AnsiCsiParam           => csi_param(p, b)
-        AnsiCsiIntermediate    => csi_intermediate(p, b)
-        AnsiCsiIgnore          => csi_ignore(p, b)
-        AnsiOscString          => osc_string(p, b)
-        AnsiDcsParam           => dcs_param(p, b)
-        AnsiDcsPassthrough     => dcs_passthrough(p, b)
-        AnsiIgnoredString      => ignored_string(p, b)
-        AnsiUtf8Continuation   => utf8_continuation(p, b)
+pub fn feed(p: vtcore.AnsiParser, b: Int) -> vtcore.AnsiParser
+    vtcore.feed(p, b)
 
-// feed advances the machine over a whole chunk, pairing every action
+// action_of is what the last byte fed asked the caller to do.
+//
+// ```novo
+// use vtparse
+//
+// fn main() [io]
+//     let p = vtparse.feed(vtparse.parser_new(), 0x0A)
+//     match vtparse.action_of(p)
+//         AnsiExecute(c) => println("${c}")   // 10
+//         _              => println("no")
+// ```
+pub fn action_of(p: vtcore.AnsiParser) -> AnsiAction
+    let k = vtcore.action_kind(p)
+    let a = vtcore.action_arg(p)
+    if k == vtcore.ACT_PRINT
+        AnsiPrint(a)
+    else if k == vtcore.ACT_EXECUTE
+        AnsiExecute(a)
+    else if k == vtcore.ACT_ESC_DISPATCH
+        AnsiEscDispatch(a)
+    else if k == vtcore.ACT_CSI_DISPATCH
+        AnsiCsiDispatch(a)
+    else if k == vtcore.ACT_OSC_START
+        AnsiOscStart
+    else if k == vtcore.ACT_OSC_PUT
+        AnsiOscPut(a)
+    else if k == vtcore.ACT_OSC_END
+        AnsiOscEnd(terminator_of_code(a))
+    else if k == vtcore.ACT_DCS_START
+        AnsiDcsStart(a)
+    else if k == vtcore.ACT_DCS_PUT
+        AnsiDcsPut(a)
+    else if k == vtcore.ACT_DCS_END
+        AnsiDcsEnd(terminator_of_code(a))
+    else if k == vtcore.ACT_REFUSED
+        AnsiRefused(fault_of_code(a))
+    else
+        AnsiNothing
+
+// drain advances the machine over a whole chunk, pairing every action
 // with the parameters it fired with.
 //
-// The convenience over `feed_byte`, and it costs what the pairing
-// costs, which is one `AnsiParams` copied per dispatch.  A caller that
-// cannot pay that feeds bytes instead.
-pub fn feed(p: AnsiParser, chunk: [u8]) -> AnsiDrained
+// The convenience over `feed`, and it costs what the pairing costs,
+// which is one `AnsiParams` copied per action.  A caller that cannot
+// pay that feeds bytes instead.
+//
+// ```novo
+// use vtparse
+//
+// fn main() [io]
+//     let d = vtparse.drain(vtparse.parser_new(), [0x41 as u8, 0x42 as u8])
+//     println("${list.len(d.calls)}")   // 2
+// ```
+pub fn drain(p: vtcore.AnsiParser, chunk: [u8]) -> AnsiDrained
     var q = p
     var calls: [AnsiCall] = []
     for b in chunk
-        let s = feed_byte(q, b as Int)
-        q = s.parser
-        if is_nothing(s.action) == false
-            calls = list.push(calls, AnsiCall { action: s.action, params: params_of(q) })
+        q = vtcore.feed(q, b as Int)
+        let a = action_of(q)
+        if is_nothing(a) == false
+            calls = list.push(calls, AnsiCall { action: a, params: params_of(q) })
     AnsiDrained { parser: q, calls: calls }
 
 // reset puts the machine back in the ground state and forgets every
@@ -881,24 +481,44 @@ pub fn feed(p: AnsiParser, chunk: [u8]) -> AnsiDrained
 //
 // What a program calls after it has written `ESC c` (RIS), or after it
 // has taken a stream over from somewhere it does not trust.
-pub fn reset(p: AnsiParser) -> AnsiParser
-    cleared(p, AnsiGround, AnsiNothing).parser
+//
+// ```novo
+// use vtparse
+//
+// fn main() [io]
+//     let p = vtparse.feed(vtparse.parser_new(), 0x1B)
+//     println("${vtparse.is_settled(vtparse.reset(p))}")   // true
+// ```
+pub fn reset(p: vtcore.AnsiParser) -> vtcore.AnsiParser
+    vtcore.reset(p)
 
 // state_of is where the machine is resting.
-pub fn state_of(p: AnsiParser) -> AnsiState
-    p.state
+//
+// ```novo
+// use vtparse
+//
+// fn main() [io]
+//     match vtparse.state_of(vtparse.parser_new())
+//         AnsiGround => println("ground")
+//         _          => println("elsewhere")
+// ```
+pub fn state_of(p: vtcore.AnsiParser) -> AnsiState
+    state_of_code(vtcore.state_code(p))
 
 // is_settled says whether the machine is in the ground state, which is
 // the one state where injecting bytes into the stream is safe.
-pub fn is_settled(p: AnsiParser) -> Bool
-    match p.state
-        AnsiGround => true
-        _          => false
+pub fn is_settled(p: vtcore.AnsiParser) -> Bool
+    vtcore.is_settled(p)
+
+// limits_of is the ceilings the parser is enforcing, after
+// `parser_with` held each one to the package's capacity.
+pub fn limits_of(p: vtcore.AnsiParser) -> vtcore.AnsiLimits
+    vtcore.limits_of(p)
 
 // param_count is how many parameters the last dispatch came with,
 // counting a colon group as one.
-pub fn param_count(p: AnsiParser) -> Int
-    count_of(p.groups)
+pub fn param_count(p: vtcore.AnsiParser) -> Int
+    vtcore.param_count(p)
 
 // param_at is parameter `i`, with `fallback` for one that is absent or
 // empty.
@@ -907,51 +527,73 @@ pub fn param_count(p: AnsiParser) -> Int
 // gives different defaults to different sequences.  CUU's omitted
 // parameter means 1 and ED's means 0, so a caller that hard-coded
 // either would be wrong half the time.
-pub fn param_at(p: AnsiParser, i: Int, fallback: Int) -> Int
-    at_of(p.values, p.groups, i, fallback)
+pub fn param_at(p: vtcore.AnsiParser, i: Int, fallback: Int) -> Int
+    vtcore.param_at(p, i, fallback)
 
 // sub_count is how many sub-parameters parameter `i` has, counting
 // itself.  It is 1 for a plain parameter and 6 for `38:2::1:2:3`.
-pub fn sub_count(p: AnsiParser, i: Int) -> Int
-    sub_count_of(p.groups, i)
+pub fn sub_count(p: vtcore.AnsiParser, i: Int) -> Int
+    vtcore.sub_count(p, i)
 
 // sub_at is sub-parameter `j` of parameter `i`, with `fallback` for one
 // that is absent or empty.  The empty middle slot of `38:2::1:2:3` is
 // the case that matters.
-pub fn sub_at(p: AnsiParser, i: Int, j: Int, fallback: Int) -> Int
-    sub_at_of(p.values, p.groups, i, j, fallback)
+pub fn sub_at(p: vtcore.AnsiParser, i: Int, j: Int, fallback: Int) -> Int
+    vtcore.sub_at(p, i, j, fallback)
 
 // intermediate_count is how many intermediate bytes the last dispatch
 // came with.
-pub fn intermediate_count(p: AnsiParser) -> Int
-    list.len(p.intermediates)
+pub fn intermediate_count(p: vtcore.AnsiParser) -> Int
+    vtcore.intermediate_count(p)
 
 // intermediate_at is intermediate byte `i`, or 0 past the end.
-pub fn intermediate_at(p: AnsiParser, i: Int) -> Int
-    if i < 0 or i >= list.len(p.intermediates)
-        0
-    else
-        list.get(p.intermediates, i)
+pub fn intermediate_at(p: vtcore.AnsiParser, i: Int) -> Int
+    vtcore.intermediate_at(p, i)
 
 // private_marker_of is the byte that opened a private sequence, or
-// `NO_PRIVATE_MARKER` when the sequence had none.  It is `?` for the
-// DEC modes, and `<`, `=` or `>` for the others.
+// `NO_PRIVATE_MARKER` when the sequence had none.  It is `?` for the DEC
+// modes, and `<`, `=` or `>` for the others.
 //
 // It is kept apart from the intermediates because `CSI ? 1049 h` and
 // `CSI 1049 h` are different sequences.  A parser that folded the two
 // would switch to the alternate screen when asked to set insert mode.
-pub fn private_marker_of(p: AnsiParser) -> Int
-    p.private_marker
+pub fn private_marker_of(p: vtcore.AnsiParser) -> Int
+    vtcore.private_marker_of(p)
+
+// ── A snapshot of a dispatch ────────────────────────────────────────
 
 // params_of copies everything the last dispatch came with into one
 // value.
 //
-// It copies the three lists, which is why the byte path does not use
-// it.  It is how a caller hands a whole parameter list to
-// `sgr.apply_sgr`, and what `feed` pairs with each action.
-pub fn params_of(p: AnsiParser) -> AnsiParams
-    AnsiParams { values: p.values, groups: p.groups,
-                 intermediates: p.intermediates, private_marker: p.private_marker }
+// It builds three lists, which is why the byte path does not use it.
+// It is how a caller hands a whole parameter list to `sgr.apply_sgr`,
+// and what `drain` pairs with each action.
+//
+// ```novo
+// use vtparse
+//
+// fn main() [io]
+//     var p = vtparse.parser_new()
+//     for b in [0x1B, 0x5B, 0x34, 0x6D]
+//         p = vtparse.feed(p, b)
+//     println("${vtparse.params_at(vtparse.params_of(p), 0, 0)}")   // 4
+// ```
+pub fn params_of(p: vtcore.AnsiParser) -> AnsiParams
+    var values: [Int] = []
+    var groups: [Int] = []
+    for i in 0..vtcore.param_count(p)
+        for j in 0..vtcore.sub_count(p, i)
+            values = list.push(values, vtcore.sub_at(p, i, j, PARAM_EMPTY))
+            groups = list.push(groups, i)
+    // An explicit loop rather than `list.map` over `list.range`,
+    // because `list.range` is refused for wasm and this package builds
+    // there.
+    var inter: [Int] = []
+    for k in 0..vtcore.intermediate_count(p)
+        let b = vtcore.intermediate_at(p, k)
+        inter = list.push(inter, b)
+    AnsiParams { values: values, groups: groups, intermediates: inter,
+                 private_marker: vtcore.private_marker_of(p) }
 
 // params_empty is a snapshot with no parameters, no intermediates and
 // no private marker.
@@ -978,13 +620,26 @@ pub fn params_sub_count(ps: AnsiParams, i: Int) -> Int
 pub fn params_sub_at(ps: AnsiParams, i: Int, j: Int, fallback: Int) -> Int
     sub_at_of(ps.values, ps.groups, i, j, fallback)
 
+// ── Reading an accumulated OSC payload ──────────────────────────────
+//
+// The parser does not hold the payload.  A caller accumulates the bytes
+// reported by `AnsiOscPut` in a buffer of its own, and the three
+// functions below read that buffer once `AnsiOscEnd` has fired.
+
 // osc_code reads the numeric code off an accumulated OSC payload, which
 // is the digits before the first semicolon.
 //
 // `None` when the payload does not begin with digits, which is what an
-// OSC the caller should ignore looks like.  The parser does not hold
-// the payload, so the caller passes the bytes it accumulated from
-// `AnsiOscPut`.
+// OSC the caller should ignore looks like.
+//
+// ```novo
+// use vtparse
+//
+// fn main() [io]
+//     match vtparse.osc_code([0x35 as u8, 0x32 as u8, 0x3B as u8, 0x63 as u8])
+//         Some(n) => println("${n}")   // 52
+//         None    => println("none")
+// ```
 pub fn osc_code(payload: [u8]) -> ?Int
     var code = 0
     var seen = false
@@ -1009,6 +664,15 @@ pub fn osc_code(payload: [u8]) -> ?Int
 // selection is field 1 and the data is field 2.  The last field is
 // returned whole rather than split further, because a base64 payload
 // may legitimately contain nothing this function would split on.
+//
+// ```novo
+// use vtparse
+//
+// fn main() [io]
+//     match vtparse.osc_field([0x30 as u8, 0x3B as u8, 0x68 as u8], 1)
+//         Some(f) => println("${list.len(f)}")   // 1
+//         None    => println("none")
+// ```
 pub fn osc_field(payload: [u8], n: Int) -> ?[u8]
     let n_bytes = list.len(payload)
     var field = 0
@@ -1029,3 +693,27 @@ pub fn osc_field(payload: [u8], n: Int) -> ?[u8]
         None
     else
         Some(list.slice(payload, from, upto))
+
+// osc_body is everything after the first semicolon of an accumulated
+// OSC payload, and `None` when the payload has no semicolon.
+//
+// The code and the body are what almost every OSC is.  `OSC 0 ; <text>`
+// sets the window title and `OSC 8 ; <params> ; <uri>` opens a
+// hyperlink, and in both the caller wants the code through `osc_code`
+// and the rest whole.  A body with semicolons of its own comes back
+// with them, which `osc_field` would have split.
+//
+// ```novo
+// use vtparse
+//
+// fn main() [io]
+//     match vtparse.osc_body([0x30 as u8, 0x3B as u8, 0x68 as u8, 0x69 as u8])
+//         Some(b) => println("${list.len(b)}")   // 2
+//         None    => println("none")
+// ```
+pub fn osc_body(payload: [u8]) -> ?[u8]
+    let n_bytes = list.len(payload)
+    for k in 0..n_bytes
+        if (list.get(payload, k) as Int) == 0x3B
+            return Some(list.slice(payload, k + 1, n_bytes))
+    None

@@ -23,12 +23,12 @@ fn cup_2_1() -> [Int]
 // Feed a whole list of bytes and hand back the last step.  That is the
 // shape almost every case here wants, because it carries the action
 // that fired and the parser it fired with.
-fn run(bytes: [Int]) -> vtparse.AnsiStep
+fn run(bytes: [Int]) -> vtcore.AnsiParser
     var p = vtparse.parser_new()
-    var last = vtparse.feed_byte(p, 0)
+    var last = vtparse.feed(p, 0)
     for b in bytes
-        last = vtparse.feed_byte(p, b)
-        p = last.parser
+        last = vtparse.feed(p, b)
+        p = last
     last
 
 @test
@@ -48,18 +48,18 @@ fn test_a_fresh_parser_is_in_the_ground_state() [io]
 fn test_a_printable_byte_comes_out_as_a_codepoint() [io]
     test.case("'A' is a print of 0x41")
     let step = run([0x41])
-    match step.action
+    match vtparse.action_of(step)
         AnsiPrint(ch) => test.assert(ch == 0x41)
         _             => test.assert(false)
 
     test.case("and the machine is settled again")
-    test.assert(vtparse.is_settled(step.parser))
+    test.assert(vtparse.is_settled(step))
 
 @test
 fn test_a_control_byte_comes_out_as_an_execute() [io]
     test.case("LF is an execute of 0x0A")
     let step = run([0x0A])
-    match step.action
+    match vtparse.action_of(step)
         AnsiExecute(c) => test.assert(c == 0x0A)
         _              => test.assert(false)
 
@@ -67,13 +67,13 @@ fn test_a_control_byte_comes_out_as_an_execute() [io]
 fn test_a_csi_dispatches_on_its_final_byte() [io]
     test.case("CUP's final byte is 'H'")
     let step = run(cup_2_1())
-    match step.action
+    match vtparse.action_of(step)
         AnsiCsiDispatch(f) => test.assert(f == 0x48)
         _                  => test.assert(false)
 
     test.case("and its two parameters are readable off the parser it came with")
-    test.assert(vtparse.param_at(step.parser, 0, 1) == 2)
-    test.assert(vtparse.param_at(step.parser, 1, 1) == 1)
+    test.assert(vtparse.param_at(step, 0, 1) == 2)
+    test.assert(vtparse.param_at(step, 1, 1) == 1)
 
 @test
 fn test_a_chunk_may_split_inside_a_parameter_list() [io]
@@ -81,57 +81,57 @@ fn test_a_chunk_may_split_inside_a_parameter_list() [io]
     // halves, keep the parser across the break, and assert the same
     // dispatch.
     var p = vtparse.parser_new()
-    var last = vtparse.feed_byte(p, 0)
+    var last = vtparse.feed(p, 0)
     for b in [0x1B, 0x5B, 0x32]
-        last = vtparse.feed_byte(p, b)
-        p = last.parser
+        last = vtparse.feed(p, b)
+        p = last
 
     test.case("mid-parameter, the machine is not settled")
     test.assert(vtparse.is_settled(p) == false)
 
     for b in [0x3B, 0x31, 0x48]
-        last = vtparse.feed_byte(p, b)
-        p = last.parser
+        last = vtparse.feed(p, b)
+        p = last
 
     test.case("and the split makes no difference to the dispatch")
-    match last.action
+    match vtparse.action_of(last)
         AnsiCsiDispatch(f) => test.assert(f == 0x48)
         _                  => test.assert(false)
-    test.assert(vtparse.param_at(last.parser, 0, 1) == 2)
+    test.assert(vtparse.param_at(last, 0, 1) == 2)
 
 @test
 fn test_an_omitted_parameter_takes_the_callers_default() [io]
     test.case("`CSI H` has no parameters")
     let step = run([0x1B, 0x5B, 0x48])
-    test.assert(vtparse.param_count(step.parser) == 0)
+    test.assert(vtparse.param_count(step) == 0)
 
     test.case("and the fallback is the caller's, not zero")
-    test.assert(vtparse.param_at(step.parser, 0, 1) == 1)
-    test.assert(vtparse.param_at(step.parser, 0, 0) == 0)
+    test.assert(vtparse.param_at(step, 0, 1) == 1)
+    test.assert(vtparse.param_at(step, 0, 0) == 0)
 
 @test
 fn test_an_empty_parameter_is_not_a_zero() [io]
     test.case("`CSI ; 5 H` has an empty first parameter")
     let step = run([0x1B, 0x5B, 0x3B, 0x35, 0x48])
-    test.assert(vtparse.param_count(step.parser) == 2)
+    test.assert(vtparse.param_count(step) == 2)
 
     test.case("and the empty one takes the fallback rather than reading 0")
-    test.assert(vtparse.param_at(step.parser, 0, 1) == 1)
-    test.assert(vtparse.param_at(step.parser, 1, 1) == 5)
+    test.assert(vtparse.param_at(step, 0, 1) == 1)
+    test.assert(vtparse.param_at(step, 1, 1) == 5)
 
 @test
 fn test_the_private_marker_is_kept_apart_from_the_parameters() [io]
     test.case("`CSI ? 1049 h` carries the '?' as a marker")
     let step = run([0x1B, 0x5B, 0x3F, 0x31, 0x30, 0x34, 0x39, 0x68])
-    test.assert(vtparse.private_marker_of(step.parser) == 0x3F)
+    test.assert(vtparse.private_marker_of(step) == 0x3F)
 
     test.case("and 1049 as its only parameter")
-    test.assert(vtparse.param_count(step.parser) == 1)
-    test.assert(vtparse.param_at(step.parser, 0, 0) == 1049)
+    test.assert(vtparse.param_count(step) == 1)
+    test.assert(vtparse.param_at(step, 0, 0) == 1049)
 
     test.case("while `CSI 4 h` carries no marker at all")
     let plain = run([0x1B, 0x5B, 0x34, 0x68])
-    test.assert(vtparse.private_marker_of(plain.parser) == vtparse.NO_PRIVATE_MARKER)
+    test.assert(vtparse.private_marker_of(plain) == vtparse.NO_PRIVATE_MARKER)
 
 @test
 fn test_colon_sub_parameters_stay_in_their_group() [io]
@@ -139,12 +139,12 @@ fn test_colon_sub_parameters_stay_in_their_group() [io]
     // sub-parameters.
     test.case("`4:3` is one parameter")
     let step = run([0x1B, 0x5B, 0x34, 0x3A, 0x33, 0x6D])
-    test.assert(vtparse.param_count(step.parser) == 1)
+    test.assert(vtparse.param_count(step) == 1)
 
     test.case("with two sub-parameters, counting itself")
-    test.assert(vtparse.sub_count(step.parser, 0) == 2)
-    test.assert(vtparse.sub_at(step.parser, 0, 0, 0) == 4)
-    test.assert(vtparse.sub_at(step.parser, 0, 1, 0) == 3)
+    test.assert(vtparse.sub_count(step, 0) == 2)
+    test.assert(vtparse.sub_at(step, 0, 0, 0) == 4)
+    test.assert(vtparse.sub_at(step, 0, 1, 0) == 3)
 
 @test
 fn test_an_empty_sub_parameter_slot_survives() [io]
@@ -153,12 +153,12 @@ fn test_an_empty_sub_parameter_slot_survives() [io]
     test.case("the empty middle slot is still a slot")
     let step = run([0x1B, 0x5B, 0x33, 0x38, 0x3A, 0x32, 0x3A, 0x3A,
                     0x31, 0x3A, 0x32, 0x3A, 0x33, 0x6D])
-    test.assert(vtparse.sub_count(step.parser, 0) == 6)
+    test.assert(vtparse.sub_count(step, 0) == 6)
 
     test.case("and the channels are where T.416 puts them")
-    test.assert(vtparse.sub_at(step.parser, 0, 3, 0) == 1)
-    test.assert(vtparse.sub_at(step.parser, 0, 4, 0) == 2)
-    test.assert(vtparse.sub_at(step.parser, 0, 5, 0) == 3)
+    test.assert(vtparse.sub_at(step, 0, 3, 0) == 1)
+    test.assert(vtparse.sub_at(step, 0, 4, 0) == 2)
+    test.assert(vtparse.sub_at(step, 0, 5, 0) == 3)
 
 @test
 fn test_an_osc_payload_arrives_a_byte_at_a_time() [io]
@@ -169,9 +169,9 @@ fn test_an_osc_payload_arrives_a_byte_at_a_time() [io]
     var ends = 0
     var others = 0
     for b in [0x1B, 0x5D, 0x30, 0x3B, 0x41, 0x07]
-        let step = vtparse.feed_byte(p, b)
-        p = step.parser
-        match step.action
+        let step = vtparse.feed(p, b)
+        p = step
+        match vtparse.action_of(step)
             AnsiOscStart  =>
                 starts = starts + 1
             AnsiOscPut(_) =>
@@ -200,7 +200,7 @@ fn test_an_osc_payload_arrives_a_byte_at_a_time() [io]
 fn test_the_osc_terminator_is_reported_rather_than_normalised() [io]
     test.case("a BEL-terminated string says so")
     let bel = run([0x1B, 0x5D, 0x30, 0x3B, 0x41, 0x07])
-    match bel.action
+    match vtparse.action_of(bel)
         AnsiOscEnd(t) =>
             match t
                 AnsiBelTerminated => test.assert(true)
@@ -209,7 +209,7 @@ fn test_the_osc_terminator_is_reported_rather_than_normalised() [io]
 
     test.case("and an ST-terminated one says that instead")
     let st = run([0x1B, 0x5D, 0x30, 0x3B, 0x41, 0x1B, 0x5C])
-    match st.action
+    match vtparse.action_of(st)
         AnsiOscEnd(t) =>
             match t
                 AnsiStTerminated  => test.assert(true)
@@ -243,23 +243,61 @@ fn test_an_osc_payload_splits_into_fields() [io]
         Some(_) => test.assert(false)
         None    => test.assert(true)
 
+    test.case("the body is everything after the first semicolon, whole")
+    match vtparse.osc_body(payload)
+        Some(b) => test.assert(list.len(b) == 6)
+        None    => test.assert(false)
+
+    test.case("and a payload with no semicolon has no body")
+    match vtparse.osc_body([0x30 as u8, 0x31 as u8])
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+
+@test
+fn test_a_snapshot_keeps_an_empty_parameter_empty() [io]
+    // `CSI ; 5 H`, whose first parameter is an absence rather than a
+    // zero.  ECMA-48 section 5.4.2 gives an omitted parameter the
+    // function's own default, so a caller has to be able to tell the
+    // two apart.
+    var p = vtparse.parser_new()
+    for b in [0x1B, 0x5B, 0x3B, 0x35, 0x48]
+        p = vtparse.feed(p, b)
+    let ps = vtparse.params_of(p)
+
+    test.case("the empty slot answers the fallback rather than zero")
+    test.assert(vtparse.params_at(ps, 0, 0 - 1) == 0 - 1)
+    test.assert(vtparse.params_at(ps, 0, 1) == 1)
+
+    test.case("the parameter after it is the number that was written")
+    test.assert(vtparse.params_at(ps, 1, 0) == 5)
+
+    test.case("and the sub-parameter reader agrees with it")
+    test.assert(vtparse.params_sub_at(ps, 0, 0, 0 - 1) == 0 - 1)
+
+    test.case("a sub-parameter index that runs into the next parameter is absent")
+    test.assert(vtparse.params_sub_count(ps, 0) == 1)
+    test.assert(vtparse.params_sub_at(ps, 0, 1, 0 - 2) == 0 - 2)
+
+    test.case("the parser reports the ceilings it is enforcing")
+    test.assert((vtparse.limits_of(p).params_max as Int) == 16)
+
 @test
 fn test_a_multi_byte_codepoint_is_assembled_across_bytes() [io]
     // U+00E9, latin small letter e with acute, which is 0xC3 0xA9.
     var p = vtparse.parser_new()
-    let first = vtparse.feed_byte(p, 0xC3)
+    let first = vtparse.feed(p, 0xC3)
 
     test.case("the lead byte alone prints nothing")
-    match first.action
+    match vtparse.action_of(first)
         AnsiNothing => test.assert(true)
         _           => test.assert(false)
 
     test.case("and leaves the machine unsettled")
-    test.assert(vtparse.is_settled(first.parser) == false)
+    test.assert(vtparse.is_settled(first) == false)
 
     test.case("the continuation byte completes the codepoint")
-    let second = vtparse.feed_byte(first.parser, 0xA9)
-    match second.action
+    let second = vtparse.feed(first, 0xA9)
+    match vtparse.action_of(second)
         AnsiPrint(ch) => test.assert(ch == 0xE9)
         _             => test.assert(false)
 
@@ -267,7 +305,7 @@ fn test_a_multi_byte_codepoint_is_assembled_across_bytes() [io]
 fn test_a_broken_codepoint_is_refused_rather_than_silently_dropped() [io]
     test.case("a lone continuation byte in the ground state is a fault")
     let step = run([0xA9])
-    match step.action
+    match vtparse.action_of(step)
         AnsiRefused(why) =>
             match why
                 AnsiBadUtf8 => test.assert(true)
@@ -284,9 +322,9 @@ fn test_a_parameter_list_past_the_limit_is_refused() [io]
     for b in [0x1B, 0x5B, 0x31, 0x3B, 0x31, 0x3B, 0x31, 0x3B, 0x31,
               0x3B, 0x31, 0x3B, 0x31, 0x3B, 0x31, 0x3B, 0x31, 0x3B,
               0x31, 0x3B, 0x31, 0x48]
-        let step = vtparse.feed_byte(p, b)
-        p = step.parser
-        match step.action
+        let step = vtparse.feed(p, b)
+        p = step
+        match vtparse.action_of(step)
             AnsiRefused(_) =>
                 refused = true
             _              =>
@@ -303,8 +341,8 @@ fn test_a_parameter_list_past_the_limit_is_refused() [io]
 fn test_reset_forgets_a_partial_sequence() [io]
     var p = vtparse.parser_new()
     for b in [0x1B, 0x5B, 0x32]
-        let step = vtparse.feed_byte(p, b)
-        p = step.parser
+        let step = vtparse.feed(p, b)
+        p = step
 
     test.case("mid-sequence, the machine is not settled")
     test.assert(vtparse.is_settled(p) == false)
@@ -314,7 +352,7 @@ fn test_reset_forgets_a_partial_sequence() [io]
 
 @test
 fn test_the_chunk_path_pairs_every_action_with_its_parameters() [io]
-    let drained = vtparse.feed(vtparse.parser_new(), [0x1B as u8, 0x5B as u8,
+    let drained = vtparse.drain(vtparse.parser_new(), [0x1B as u8, 0x5B as u8,
                                                       0x32 as u8, 0x3B as u8,
                                                       0x31 as u8, 0x48 as u8])
 

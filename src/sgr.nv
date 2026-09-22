@@ -116,77 +116,201 @@ pub struct SgrAttrs
 
 // ── Building an attribute set ───────────────────────────────────────
 //
-// One setter per field, and each returns a fresh literal.  Assigning a
-// field of a copy would write through to the caller's `SgrAttrs` on
-// this toolchain (novo bug
-// lang/struct-field-assignment-aliases-the-caller), and a renderer
-// whose previous style became the new one would emit no transitions at
-// all.
+// One setter per field.  `attrs_default` is the terminal's own state
+// and every other set of attributes is built from it, because the
+// fields are not `var` and a literal written outside this module would
+// have to name all twelve.
+//
+// Each setter returns a fresh literal.  `SgrAttrs` is a plain struct,
+// which is a reference type (SPEC section 4.1), so a field store is
+// seen through every binding that names the same attributes — the
+// caller's included — and a renderer whose previous style became the
+// new one would emit no transitions at all.  None of the fields is
+// `var`, so the compiler refuses the store outright (E2034); the
+// literal is the spelling a value-returning function has anyway.
 
-fn set_fg(a: SgrAttrs, c: AnsiColor) -> SgrAttrs
+// set_fg is `a` with the foreground colour given.  SGR 30 to 37, 90 to
+// 97, 38 and 39 all land here.
+//
+// ```novo
+// use sgr
+//
+// fn main() [io]
+//     let a = sgr.set_fg(sgr.attrs_default(), AnsiIndexed(1))
+//     match a.fg
+//         AnsiIndexed(i) => println("${i}")   // 1
+//         _              => println("not indexed")
+// ```
+pub fn set_fg(a: SgrAttrs, c: AnsiColor) -> SgrAttrs
     SgrAttrs { fg: c, bg: a.bg, underline_color: a.underline_color, bold: a.bold,
                dim: a.dim, italic: a.italic, underline: a.underline, blink: a.blink,
                inverse: a.inverse, hidden: a.hidden, strike: a.strike,
                overline: a.overline }
 
-fn set_bg(a: SgrAttrs, c: AnsiColor) -> SgrAttrs
+// set_bg is `a` with the background colour given.  SGR 40 to 47, 100 to
+// 107, 48 and 49 all land here.
+//
+// ```novo
+// use sgr
+//
+// fn main() [io]
+//     let a = sgr.set_bg(sgr.attrs_default(), AnsiTrueColor(10, 20, 30))
+//     match a.bg
+//         AnsiTrueColor(r, _, _) => println("${r}")   // 10
+//         _                      => println("not true colour")
+// ```
+pub fn set_bg(a: SgrAttrs, c: AnsiColor) -> SgrAttrs
     SgrAttrs { fg: a.fg, bg: c, underline_color: a.underline_color, bold: a.bold,
                dim: a.dim, italic: a.italic, underline: a.underline, blink: a.blink,
                inverse: a.inverse, hidden: a.hidden, strike: a.strike,
                overline: a.overline }
 
-fn set_underline_color(a: SgrAttrs, c: AnsiColor) -> SgrAttrs
+// set_underline_color is `a` with the underline colour given, which is
+// SGR 58 and 59.  It is independent of the foreground, and a terminal
+// without the extension ignores it.
+//
+// ```novo
+// use sgr
+//
+// fn main() [io]
+//     let a = sgr.set_underline_color(sgr.attrs_default(), AnsiIndexed(9))
+//     match a.underline_color
+//         AnsiIndexed(i) => println("${i}")   // 9
+//         _              => println("not indexed")
+// ```
+pub fn set_underline_color(a: SgrAttrs, c: AnsiColor) -> SgrAttrs
     SgrAttrs { fg: a.fg, bg: a.bg, underline_color: c, bold: a.bold, dim: a.dim,
                italic: a.italic, underline: a.underline, blink: a.blink,
                inverse: a.inverse, hidden: a.hidden, strike: a.strike,
                overline: a.overline }
 
-fn set_bold(a: SgrAttrs, v: Bool) -> SgrAttrs
+// set_bold is `a` with SGR 1 on or off.
+//
+// ```novo
+// use sgr
+//
+// fn main() [io]
+//     println("${sgr.set_bold(sgr.attrs_default(), true).bold}")   // true
+// ```
+pub fn set_bold(a: SgrAttrs, v: Bool) -> SgrAttrs
     SgrAttrs { fg: a.fg, bg: a.bg, underline_color: a.underline_color, bold: v,
                dim: a.dim, italic: a.italic, underline: a.underline, blink: a.blink,
                inverse: a.inverse, hidden: a.hidden, strike: a.strike,
                overline: a.overline }
 
-fn set_dim(a: SgrAttrs, v: Bool) -> SgrAttrs
+// set_dim is `a` with SGR 2 on or off.  It is separate from `bold`,
+// because SGR 22 clears both and a cell may carry either.
+//
+// ```novo
+// use sgr
+//
+// fn main() [io]
+//     println("${sgr.set_dim(sgr.attrs_default(), true).dim}")   // true
+// ```
+pub fn set_dim(a: SgrAttrs, v: Bool) -> SgrAttrs
     SgrAttrs { fg: a.fg, bg: a.bg, underline_color: a.underline_color, bold: a.bold,
                dim: v, italic: a.italic, underline: a.underline, blink: a.blink,
                inverse: a.inverse, hidden: a.hidden, strike: a.strike,
                overline: a.overline }
 
-fn set_italic(a: SgrAttrs, v: Bool) -> SgrAttrs
+// set_italic is `a` with SGR 3 on or off.
+//
+// ```novo
+// use sgr
+//
+// fn main() [io]
+//     println("${sgr.set_italic(sgr.attrs_default(), true).italic}")   // true
+// ```
+pub fn set_italic(a: SgrAttrs, v: Bool) -> SgrAttrs
     SgrAttrs { fg: a.fg, bg: a.bg, underline_color: a.underline_color, bold: a.bold,
                dim: a.dim, italic: v, underline: a.underline, blink: a.blink,
                inverse: a.inverse, hidden: a.hidden, strike: a.strike,
                overline: a.overline }
 
-fn set_underline(a: SgrAttrs, u: SgrUnderline) -> SgrAttrs
+// set_underline is `a` with the underline style given.  The five styles
+// are mutually exclusive, so this replaces rather than adds.
+//
+// ```novo
+// use sgr
+//
+// fn main() [io]
+//     let a = sgr.set_underline(sgr.attrs_default(), SgrCurlyUnderline)
+//     match a.underline
+//         SgrCurlyUnderline => println("curly")
+//         _                 => println("something else")
+// ```
+pub fn set_underline(a: SgrAttrs, u: SgrUnderline) -> SgrAttrs
     SgrAttrs { fg: a.fg, bg: a.bg, underline_color: a.underline_color, bold: a.bold,
                dim: a.dim, italic: a.italic, underline: u, blink: a.blink,
                inverse: a.inverse, hidden: a.hidden, strike: a.strike,
                overline: a.overline }
 
-fn set_blink(a: SgrAttrs, v: Bool) -> SgrAttrs
+// set_blink is `a` with SGR 5 or 6 on or off.  The two are one flag
+// here, because no terminal in use distinguishes slow from rapid.
+//
+// ```novo
+// use sgr
+//
+// fn main() [io]
+//     println("${sgr.set_blink(sgr.attrs_default(), true).blink}")   // true
+// ```
+pub fn set_blink(a: SgrAttrs, v: Bool) -> SgrAttrs
     SgrAttrs { fg: a.fg, bg: a.bg, underline_color: a.underline_color, bold: a.bold,
                dim: a.dim, italic: a.italic, underline: a.underline, blink: v,
                inverse: a.inverse, hidden: a.hidden, strike: a.strike,
                overline: a.overline }
 
-fn set_inverse(a: SgrAttrs, v: Bool) -> SgrAttrs
+// set_inverse is `a` with SGR 7 on or off.  It is kept as a flag rather
+// than applied to the two colours, because SGR 27 has to be able to
+// undo it.
+//
+// ```novo
+// use sgr
+//
+// fn main() [io]
+//     println("${sgr.set_inverse(sgr.attrs_default(), true).inverse}")   // true
+// ```
+pub fn set_inverse(a: SgrAttrs, v: Bool) -> SgrAttrs
     SgrAttrs { fg: a.fg, bg: a.bg, underline_color: a.underline_color, bold: a.bold,
                dim: a.dim, italic: a.italic, underline: a.underline, blink: a.blink,
                inverse: v, hidden: a.hidden, strike: a.strike, overline: a.overline }
 
-fn set_hidden(a: SgrAttrs, v: Bool) -> SgrAttrs
+// set_hidden is `a` with SGR 8 on or off.  A hidden cell is drawn in
+// the background colour.
+//
+// ```novo
+// use sgr
+//
+// fn main() [io]
+//     println("${sgr.set_hidden(sgr.attrs_default(), true).hidden}")   // true
+// ```
+pub fn set_hidden(a: SgrAttrs, v: Bool) -> SgrAttrs
     SgrAttrs { fg: a.fg, bg: a.bg, underline_color: a.underline_color, bold: a.bold,
                dim: a.dim, italic: a.italic, underline: a.underline, blink: a.blink,
                inverse: a.inverse, hidden: v, strike: a.strike, overline: a.overline }
 
-fn set_strike(a: SgrAttrs, v: Bool) -> SgrAttrs
+// set_strike is `a` with SGR 9 on or off.
+//
+// ```novo
+// use sgr
+//
+// fn main() [io]
+//     println("${sgr.set_strike(sgr.attrs_default(), true).strike}")   // true
+// ```
+pub fn set_strike(a: SgrAttrs, v: Bool) -> SgrAttrs
     SgrAttrs { fg: a.fg, bg: a.bg, underline_color: a.underline_color, bold: a.bold,
                dim: a.dim, italic: a.italic, underline: a.underline, blink: a.blink,
                inverse: a.inverse, hidden: a.hidden, strike: v, overline: a.overline }
 
-fn set_overline(a: SgrAttrs, v: Bool) -> SgrAttrs
+// set_overline is `a` with SGR 53 on or off.
+//
+// ```novo
+// use sgr
+//
+// fn main() [io]
+//     println("${sgr.set_overline(sgr.attrs_default(), true).overline}")   // true
+// ```
+pub fn set_overline(a: SgrAttrs, v: Bool) -> SgrAttrs
     SgrAttrs { fg: a.fg, bg: a.bg, underline_color: a.underline_color, bold: a.bold,
                dim: a.dim, italic: a.italic, underline: a.underline, blink: a.blink,
                inverse: a.inverse, hidden: a.hidden, strike: a.strike, overline: v }

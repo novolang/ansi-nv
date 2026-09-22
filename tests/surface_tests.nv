@@ -178,3 +178,37 @@ fn test_a_reply_reads_back_off_a_snapshot_as_well_as_a_parser() [io]
     match vtquery.reply_of_params(vtparse.params_empty(), 0x52)
         Some(_) => test.assert(false)
         None    => test.assert(true)
+
+@test
+fn test_every_attribute_has_a_setter_a_consumer_can_call() [io]
+    // `SgrAttrs` has twelve fields and none of them is `var`, so a
+    // consumer outside this package builds a set of attributes by
+    // starting at `attrs_default` and calling these.
+    let plain = sgr.attrs_default()
+
+    test.case("the three colours each take an AnsiColor")
+    test.assert(sgr.attrs_eq(sgr.set_fg(plain, AnsiIndexed(1)), plain) == false)
+    test.assert(sgr.attrs_eq(sgr.set_bg(plain, AnsiTrueColor(1, 2, 3)), plain) == false)
+    test.assert(sgr.attrs_eq(sgr.set_underline_color(plain, AnsiIndexed(9)),
+                             plain) == false)
+
+    test.case("the underline style takes one of the five")
+    test.assert(sgr.attrs_eq(sgr.set_underline(plain, SgrCurlyUnderline),
+                             plain) == false)
+
+    test.case("and the eight flags each take a Bool")
+    test.assert(sgr.set_bold(plain, true).bold)
+    test.assert(sgr.set_dim(plain, true).dim)
+    test.assert(sgr.set_italic(plain, true).italic)
+    test.assert(sgr.set_blink(plain, true).blink)
+    test.assert(sgr.set_inverse(plain, true).inverse)
+    test.assert(sgr.set_hidden(plain, true).hidden)
+    test.assert(sgr.set_strike(plain, true).strike)
+    test.assert(sgr.set_overline(plain, true).overline)
+
+    test.case("a setter leaves the attributes it was given alone")
+    test.assert(sgr.attrs_eq(plain, sgr.attrs_default()))
+
+    test.case("and turning a flag back off returns to where it started")
+    test.assert(sgr.attrs_eq(sgr.set_bold(sgr.set_bold(plain, true), false),
+                             plain))
