@@ -176,8 +176,11 @@ fn test_the_writer_appends_to_the_buffer_it_was_given() [io]
     test.assert(list.len(one) > 0)
 
     test.case("and a second call appends to the first rather than replacing it")
+    // The length is read first, because the second call may write into
+    // `one` itself rather than into a copy of it.
+    let before = list.len(one)
     let two = seqwrite.sgr_reset(one)
-    test.assert(list.len(two) > list.len(one))
+    test.assert(list.len(two) > before)
 
 @test
 fn test_a_private_mode_writes_its_marker() [io]

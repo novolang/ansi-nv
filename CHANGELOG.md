@@ -5,6 +5,24 @@ All notable changes to ansi-nv are recorded here. The format is
 package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 with the pre-1.0 rule that a breaking change bumps the MINOR number.
 
+## 0.2.1 — 2026-09-24
+
+The package builds under the list rule of the next toolchain, where a
+list is one list under every name that holds it and a write into it
+goes through a `var` name.  Nothing changes under 0.9.2.
+
+### Changed
+
+- The private helpers that push onto a list take that list as a `mut`
+  parameter, which is the spelling `novo fmt` gives the `var` marker.
+  Under the next toolchain they write into the list they are given,
+  which is how every caller in the package already uses them.
+- The `seqwrite` writers therefore append to the caller's own buffer
+  under the next toolchain, not to a copy of it.  A program that passes
+  a buffer and then reads the buffer as it was before the call copies it
+  first, with `list.slice(buf, 0, list.len(buf))`.  One test did this,
+  and it now reads the length before the second call.
+
 ## 0.2.0 — 2026-09-22
 
 The parser is a value over fixed-capacity buffers.  Feeding a byte

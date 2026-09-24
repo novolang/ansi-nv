@@ -413,12 +413,16 @@ fn underline_sub(u: SgrUnderline) -> Int
 // and `sgr_full_sub` are the unflattened answers, and
 // `seqwrite.csi_params` is what puts one on the wire.
 
-// One parameter with no sub-parameters.
-fn one(values: [Int], groups: [Int], v: Int) -> ([Int], [Int])
-    let g = if list.len(groups) == 0
+// The group number the next parameter opens.
+fn next_group(groups: [Int]) -> Int
+    if list.len(groups) == 0
         0
     else
         list.get(groups, list.len(groups) - 1) + 1
+
+// One parameter with no sub-parameters.
+fn one(mut values: [Int], mut groups: [Int], v: Int) -> ([Int], [Int])
+    let g = next_group(groups)
     (list.push(values, v), list.push(groups, g))
 
 // Every entry of `vs` as its own parameter.
@@ -432,11 +436,10 @@ fn many(values: [Int], groups: [Int], vs: [Int]) -> ([Int], [Int])
     (acc_v, acc_g)
 
 // One parameter carrying one sub-parameter, as in `4:3` and its
-// family.
-fn one_sub(values: [Int], groups: [Int], v: Int, sub: Int) -> ([Int], [Int])
-    let (nv, ng) = one(values, groups, v)
-    let g = list.get(ng, list.len(ng) - 1)
-    (list.push(nv, sub), list.push(ng, g))
+// family.  Both values join the same group.
+fn one_sub(mut values: [Int], mut groups: [Int], v: Int, sub: Int) -> ([Int], [Int])
+    let g = next_group(groups)
+    (list.push(list.push(values, v), sub), list.push(list.push(groups, g), g))
 
 // The parameters an underline style is written with.
 fn underline_params(values: [Int], groups: [Int], u: SgrUnderline) -> ([Int], [Int])
