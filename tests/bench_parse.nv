@@ -78,7 +78,7 @@ struct Handle
     var parser: vtcore.AnsiParser
 
 fn in_a_field(stream: [u8]) -> Int
-    let h = Handle { parser: vtparse.parser_new() }
+    var h = Handle { parser: vtparse.parser_new() }
     var acc = 0
     for b in stream
         h.parser = vtparse.feed(h.parser, b as Int)

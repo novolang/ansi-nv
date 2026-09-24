@@ -22,6 +22,9 @@ goes through a `var` name.  Nothing changes under 0.9.2.
   a buffer and then reads the buffer as it was before the call copies it
   first, with `list.slice(buf, 0, list.len(buf))`.  One test did this,
   and it now reads the length before the second call.
+- The benchmark program declares its handle `var`, because it stores
+  into the handle's field, and the next toolchain refuses a store
+  through a `let`.
 
 ## 0.2.0 — 2026-09-22
 
