@@ -172,15 +172,15 @@ fn test_downgrading_a_colour_stays_inside_the_depth() [io]
 @test
 fn test_the_writer_appends_to_the_buffer_it_was_given() [io]
     test.case("a cursor move appends bytes")
-    let one = seqwrite.cursor_to([], 2, 1)
-    test.assert(list.len(one) > 0)
+    var out = seqwrite.cursor_to([], 2, 1)
+    test.assert(list.len(out) > 0)
 
     test.case("and a second call appends to the first rather than replacing it")
-    // The length is read first, because the second call may write into
-    // `one` itself rather than into a copy of it.
-    let before = list.len(one)
-    let two = seqwrite.sgr_reset(one)
-    test.assert(list.len(two) > before)
+    // The length is read first, because the second call writes into
+    // `out` itself.
+    let before = list.len(out)
+    out = seqwrite.sgr_reset(out)
+    test.assert(list.len(out) > before)
 
 @test
 fn test_a_private_mode_writes_its_marker() [io]

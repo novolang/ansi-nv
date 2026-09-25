@@ -420,29 +420,29 @@ fn next_group(groups: [Int]) -> Int
     else
         list.get(groups, list.len(groups) - 1) + 1
 
-// One parameter with no sub-parameters.
-fn one(mut values: [Int], mut groups: [Int], v: Int) -> ([Int], [Int])
+// One parameter with no sub-parameters, appended to the caller's pair
+// of lists.
+fn one(var values: [Int], var groups: [Int], v: Int)
     let g = next_group(groups)
-    (list.push(values, v), list.push(groups, g))
+    list.push(values, v)
+    list.push(groups, g)
 
 // Every entry of `vs` as its own parameter.
-fn many(values: [Int], groups: [Int], vs: [Int]) -> ([Int], [Int])
-    var acc_v = values
-    var acc_g = groups
+fn many(var values: [Int], var groups: [Int], vs: [Int])
     for v in vs
-        let (nv, ng) = one(acc_v, acc_g, v)
-        acc_v = nv
-        acc_g = ng
-    (acc_v, acc_g)
+        one(values, groups, v)
 
 // One parameter carrying one sub-parameter, as in `4:3` and its
 // family.  Both values join the same group.
-fn one_sub(mut values: [Int], mut groups: [Int], v: Int, sub: Int) -> ([Int], [Int])
+fn one_sub(var values: [Int], var groups: [Int], v: Int, sub: Int)
     let g = next_group(groups)
-    (list.push(list.push(values, v), sub), list.push(list.push(groups, g), g))
+    list.push(values, v)
+    list.push(values, sub)
+    list.push(groups, g)
+    list.push(groups, g)
 
 // The parameters an underline style is written with.
-fn underline_params(values: [Int], groups: [Int], u: SgrUnderline) -> ([Int], [Int])
+fn underline_params(var values: [Int], var groups: [Int], u: SgrUnderline)
     let sub = underline_sub(u)
     match u
         SgrNoUnderline     => one(values, groups, 24)
@@ -466,57 +466,31 @@ fn flatten(ps: vtparse.AnsiParams) -> [Int]
 fn full_params(a: SgrAttrs) -> vtparse.AnsiParams
     var v: [Int] = []
     var g: [Int] = []
-    let (v0, g0) = one(v, g, 0)
-    v = v0
-    g = g0
+    one(v, g, 0)
     if a.bold
-        let (v1, g1) = one(v, g, 1)
-        v = v1
-        g = g1
+        one(v, g, 1)
     if a.dim
-        let (v1, g1) = one(v, g, 2)
-        v = v1
-        g = g1
+        one(v, g, 2)
     if a.italic
-        let (v1, g1) = one(v, g, 3)
-        v = v1
-        g = g1
+        one(v, g, 3)
     if same_underline(a.underline, SgrNoUnderline) == false
-        let (v1, g1) = underline_params(v, g, a.underline)
-        v = v1
-        g = g1
+        underline_params(v, g, a.underline)
     if a.blink
-        let (v1, g1) = one(v, g, 5)
-        v = v1
-        g = g1
+        one(v, g, 5)
     if a.inverse
-        let (v1, g1) = one(v, g, 7)
-        v = v1
-        g = g1
+        one(v, g, 7)
     if a.hidden
-        let (v1, g1) = one(v, g, 8)
-        v = v1
-        g = g1
+        one(v, g, 8)
     if a.strike
-        let (v1, g1) = one(v, g, 9)
-        v = v1
-        g = g1
+        one(v, g, 9)
     if a.overline
-        let (v1, g1) = one(v, g, 53)
-        v = v1
-        g = g1
+        one(v, g, 53)
     if is_default_color(a.fg) == false
-        let (v1, g1) = many(v, g, color_params(a.fg, false, false))
-        v = v1
-        g = g1
+        many(v, g, color_params(a.fg, false, false))
     if is_default_color(a.bg) == false
-        let (v1, g1) = many(v, g, color_params(a.bg, true, false))
-        v = v1
-        g = g1
+        many(v, g, color_params(a.bg, true, false))
     if is_default_color(a.underline_color) == false
-        let (v1, g1) = many(v, g, color_params(a.underline_color, false, true))
-        v = v1
-        g = g1
+        many(v, g, color_params(a.underline_color, false, true))
     AnsiParams { values: v, groups: g, intermediates: [],
                  private_marker: vtparse.NO_PRIVATE_MARKER }
 
@@ -528,90 +502,60 @@ fn step_params(from: SgrAttrs, to: SgrAttrs) -> vtparse.AnsiParams
     // 22 clears bold and dim together, so a clear of either is one
     // parameter plus whichever of the two survives it.
     if from.bold and to.bold == false or from.dim and to.dim == false
-        let (v1, g1) = one(v, g, 22)
-        v = v1
-        g = g1
+        one(v, g, 22)
         if to.bold
-            let (v2, g2) = one(v, g, 1)
-            v = v2
-            g = g2
+            one(v, g, 1)
         if to.dim
-            let (v2, g2) = one(v, g, 2)
-            v = v2
-            g = g2
+            one(v, g, 2)
     else
         if to.bold and from.bold == false
-            let (v1, g1) = one(v, g, 1)
-            v = v1
-            g = g1
+            one(v, g, 1)
         if to.dim and from.dim == false
-            let (v1, g1) = one(v, g, 2)
-            v = v1
-            g = g1
+            one(v, g, 2)
     if to.italic != from.italic
         let code_it = if to.italic
             3
         else
             23
-        let (v1, g1) = one(v, g, code_it)
-        v = v1
-        g = g1
+        one(v, g, code_it)
     if same_underline(to.underline, from.underline) == false
-        let (v1, g1) = underline_params(v, g, to.underline)
-        v = v1
-        g = g1
+        underline_params(v, g, to.underline)
     if to.blink != from.blink
         let code_bl = if to.blink
             5
         else
             25
-        let (v1, g1) = one(v, g, code_bl)
-        v = v1
-        g = g1
+        one(v, g, code_bl)
     if to.inverse != from.inverse
         let code_iv = if to.inverse
             7
         else
             27
-        let (v1, g1) = one(v, g, code_iv)
-        v = v1
-        g = g1
+        one(v, g, code_iv)
     if to.hidden != from.hidden
         let code_hd = if to.hidden
             8
         else
             28
-        let (v1, g1) = one(v, g, code_hd)
-        v = v1
-        g = g1
+        one(v, g, code_hd)
     if to.strike != from.strike
         let code_st = if to.strike
             9
         else
             29
-        let (v1, g1) = one(v, g, code_st)
-        v = v1
-        g = g1
+        one(v, g, code_st)
     if to.overline != from.overline
         let code_ov = if to.overline
             53
         else
             55
-        let (v1, g1) = one(v, g, code_ov)
-        v = v1
-        g = g1
+        one(v, g, code_ov)
     if same_color(to.fg, from.fg) == false
-        let (v1, g1) = many(v, g, color_params(to.fg, false, false))
-        v = v1
-        g = g1
+        many(v, g, color_params(to.fg, false, false))
     if same_color(to.bg, from.bg) == false
-        let (v1, g1) = many(v, g, color_params(to.bg, true, false))
-        v = v1
-        g = g1
+        many(v, g, color_params(to.bg, true, false))
     if same_color(to.underline_color, from.underline_color) == false
-        let (v1, g1) = many(v, g, color_params(to.underline_color, false, true))
-        v = v1
-        g = g1
+        many(v, g, color_params(to.underline_color, false, true))
     AnsiParams { values: v, groups: g, intermediates: [],
                  private_marker: vtparse.NO_PRIVATE_MARKER }
 

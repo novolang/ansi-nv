@@ -214,7 +214,7 @@ fn reply_kind(r: AnsiReply) -> Int
 //     // and so is deciding how long to wait for the answer.
 //     println(str.from_int(list.len(out)))
 // ```
-pub fn write_query(out: [u8], q: AnsiQuery) -> [u8]
+pub fn write_query(var out: [u8], q: AnsiQuery) -> [u8]
     match q
         AnsiCursorPositionQuery      => seqwrite.csi(out, 0, [6], [], 0x6E)
         AnsiDeviceStatusQuery        => seqwrite.csi(out, 0, [5], [], 0x6E)
@@ -298,7 +298,7 @@ pub fn answers(q: AnsiQuery, r: AnsiReply) -> Bool
 // usable from both ends.  A terminal emulator built on this parser has
 // to answer the queries its child asks, and a test that feeds a program
 // a synthetic terminal has to produce them.
-pub fn write_reply(out: [u8], r: AnsiReply) -> [u8]
+pub fn write_reply(var out: [u8], r: AnsiReply) -> [u8]
     match r
         AnsiCursorPositionReply(row, col)                  =>
             seqwrite.csi(out, 0, [row, col], [], 0x52)

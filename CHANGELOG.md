@@ -5,6 +5,21 @@ All notable changes to ansi-nv are recorded here. The format is
 package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 with the pre-1.0 rule that a breaking change bumps the MINOR number.
 
+## 0.2.2 — 2026-09-25
+
+Every `seqwrite` writer and `vtquery.write_query` and
+`vtquery.write_reply` declare the buffer they append to as a `var`
+parameter.  They always wrote into the buffer they were given.  The
+next Novo release accepts such a write only through a parameter
+declared `var`, and it refuses a call that passes a buffer held under
+`let`.  A caller that holds its buffer in a `var`, or passes a new list
+or a copy, has nothing to change.  The bytes written are unchanged.
+
+- The private helpers that build an SGR parameter list append to the
+  caller's two lists and answer nothing, where they used to answer the
+  pair for the caller to store again.
+- One test holds its buffer in a `var`.
+
 ## 0.2.1 — 2026-09-24
 
 The package builds under the list rule of the next toolchain, where a
