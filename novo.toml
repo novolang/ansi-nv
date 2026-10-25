@@ -1,6 +1,6 @@
 [package]
 name        = "ansi-nv"
-version     = "0.2.2"
+version     = "0.2.3"
 description = "The escape-sequence layer with no terminal under it: the VT/xterm state machine as a byte-at-a-time parser that allocates nothing and compiles for a microcontroller, the SGR attribute model with all three colour forms, a writer that builds sequences into a caller's buffer instead of printing them, and the query/response pairs a program needs."
 license     = "Apache-2.0"
 
@@ -34,7 +34,7 @@ maintainers = ["novo-lang"]
 # Built, tested and measured on 0.9.2.  The floor is the toolchain the
 # release was checked against rather than the oldest one that might
 # work.
-novo        = ">= 0.9.2"
+novo        = ">= 0.21.1"
 
 # The package is a library with no `main`, so `novo pkg build`
 # type-checks and effect-checks every module under `src/` and writes no

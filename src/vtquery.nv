@@ -216,17 +216,17 @@ fn reply_kind(r: AnsiReply) -> Int
 // ```
 pub fn write_query(var out: [u8], q: AnsiQuery) -> [u8]
     match q
-        AnsiCursorPositionQuery      => seqwrite.csi(out, 0, [6], [], 0x6E)
-        AnsiDeviceStatusQuery        => seqwrite.csi(out, 0, [5], [], 0x6E)
-        AnsiDeviceAttributesQuery    => seqwrite.csi(out, 0, [], [], 0x63)
-        AnsiSecondaryAttributesQuery => seqwrite.csi(out, 0x3E, [], [], 0x63)
-        AnsiTextAreaSizeQuery        => seqwrite.csi(out, 0, [18], [], 0x74)
+        AnsiCursorPositionQuery      => seqwrite.csi(var out, 0, [6], [], 0x6E)
+        AnsiDeviceStatusQuery        => seqwrite.csi(var out, 0, [5], [], 0x6E)
+        AnsiDeviceAttributesQuery    => seqwrite.csi(var out, 0, [], [], 0x63)
+        AnsiSecondaryAttributesQuery => seqwrite.csi(var out, 0x3E, [], [], 0x63)
+        AnsiTextAreaSizeQuery        => seqwrite.csi(var out, 0, [18], [], 0x74)
         AnsiModeQuery(mode)          =>
             let marker = if seqwrite.mode_is_private(mode)
                 0x3F
             else
                 0
-            seqwrite.csi(out, marker, [seqwrite.mode_number(mode)], [0x24], 0x70)
+            seqwrite.csi(var out, marker, [seqwrite.mode_number(mode)], [0x24], 0x70)
 
 // reply_of reads a CSI dispatch back into a typed reply.
 //
@@ -301,13 +301,13 @@ pub fn answers(q: AnsiQuery, r: AnsiReply) -> Bool
 pub fn write_reply(var out: [u8], r: AnsiReply) -> [u8]
     match r
         AnsiCursorPositionReply(row, col)                  =>
-            seqwrite.csi(out, 0, [row, col], [], 0x52)
-        AnsiDeviceOkReply                                  => seqwrite.csi(out, 0, [0], [], 0x6E)
+            seqwrite.csi(var out, 0, [row, col], [], 0x52)
+        AnsiDeviceOkReply                                  => seqwrite.csi(var out, 0, [0], [], 0x6E)
         AnsiDeviceAttributesReply(class, options)          =>
-            seqwrite.csi(out, 0x3F, list.append([class], options), [], 0x63)
+            seqwrite.csi(var out, 0x3F, list.append([class], options), [], 0x63)
         AnsiSecondaryAttributesReply(kind, version, patch) =>
-            seqwrite.csi(out, 0x3E, [kind, version, patch], [], 0x63)
+            seqwrite.csi(var out, 0x3E, [kind, version, patch], [], 0x63)
         AnsiTextAreaSizeReply(rows, cols)                  =>
-            seqwrite.csi(out, 0, [8, rows, cols], [], 0x74)
+            seqwrite.csi(var out, 0, [8, rows, cols], [], 0x74)
         AnsiModeReply(mode, setting)                       =>
-            seqwrite.csi(out, 0x3F, [mode, setting_number(setting)], [0x24], 0x79)
+            seqwrite.csi(var out, 0x3F, [mode, setting_number(setting)], [0x24], 0x79)

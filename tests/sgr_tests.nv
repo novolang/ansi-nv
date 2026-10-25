@@ -179,7 +179,7 @@ fn test_the_writer_appends_to_the_buffer_it_was_given() [io]
     // The length is read first, because the second call writes into
     // `out` itself.
     let before = list.len(out)
-    out = seqwrite.sgr_reset(out)
+    out = seqwrite.sgr_reset(var out)
     test.assert(list.len(out) > before)
 
 @test

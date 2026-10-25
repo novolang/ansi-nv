@@ -430,7 +430,7 @@ fn one(var values: [Int], var groups: [Int], v: Int)
 // Every entry of `vs` as its own parameter.
 fn many(var values: [Int], var groups: [Int], vs: [Int])
     for v in vs
-        one(values, groups, v)
+        one(var values, var groups, v)
 
 // One parameter carrying one sub-parameter, as in `4:3` and its
 // family.  Both values join the same group.
@@ -445,9 +445,9 @@ fn one_sub(var values: [Int], var groups: [Int], v: Int, sub: Int)
 fn underline_params(var values: [Int], var groups: [Int], u: SgrUnderline)
     let sub = underline_sub(u)
     match u
-        SgrNoUnderline     => one(values, groups, 24)
-        SgrSingleUnderline => one(values, groups, 4)
-        _                  => one_sub(values, groups, 4, sub)
+        SgrNoUnderline     => one(var values, var groups, 24)
+        SgrSingleUnderline => one(var values, var groups, 4)
+        _                  => one_sub(var values, var groups, 4, sub)
 
 // One entry per group, which is what the `[Int]` shape can hold.
 //
@@ -466,31 +466,31 @@ fn flatten(ps: vtparse.AnsiParams) -> [Int]
 fn full_params(a: SgrAttrs) -> vtparse.AnsiParams
     var v: [Int] = []
     var g: [Int] = []
-    one(v, g, 0)
+    one(var v, var g, 0)
     if a.bold
-        one(v, g, 1)
+        one(var v, var g, 1)
     if a.dim
-        one(v, g, 2)
+        one(var v, var g, 2)
     if a.italic
-        one(v, g, 3)
+        one(var v, var g, 3)
     if same_underline(a.underline, SgrNoUnderline) == false
-        underline_params(v, g, a.underline)
+        underline_params(var v, var g, a.underline)
     if a.blink
-        one(v, g, 5)
+        one(var v, var g, 5)
     if a.inverse
-        one(v, g, 7)
+        one(var v, var g, 7)
     if a.hidden
-        one(v, g, 8)
+        one(var v, var g, 8)
     if a.strike
-        one(v, g, 9)
+        one(var v, var g, 9)
     if a.overline
-        one(v, g, 53)
+        one(var v, var g, 53)
     if is_default_color(a.fg) == false
-        many(v, g, color_params(a.fg, false, false))
+        many(var v, var g, color_params(a.fg, false, false))
     if is_default_color(a.bg) == false
-        many(v, g, color_params(a.bg, true, false))
+        many(var v, var g, color_params(a.bg, true, false))
     if is_default_color(a.underline_color) == false
-        many(v, g, color_params(a.underline_color, false, true))
+        many(var v, var g, color_params(a.underline_color, false, true))
     AnsiParams { values: v, groups: g, intermediates: [],
                  private_marker: vtparse.NO_PRIVATE_MARKER }
 
@@ -502,60 +502,60 @@ fn step_params(from: SgrAttrs, to: SgrAttrs) -> vtparse.AnsiParams
     // 22 clears bold and dim together, so a clear of either is one
     // parameter plus whichever of the two survives it.
     if from.bold and to.bold == false or from.dim and to.dim == false
-        one(v, g, 22)
+        one(var v, var g, 22)
         if to.bold
-            one(v, g, 1)
+            one(var v, var g, 1)
         if to.dim
-            one(v, g, 2)
+            one(var v, var g, 2)
     else
         if to.bold and from.bold == false
-            one(v, g, 1)
+            one(var v, var g, 1)
         if to.dim and from.dim == false
-            one(v, g, 2)
+            one(var v, var g, 2)
     if to.italic != from.italic
         let code_it = if to.italic
             3
         else
             23
-        one(v, g, code_it)
+        one(var v, var g, code_it)
     if same_underline(to.underline, from.underline) == false
-        underline_params(v, g, to.underline)
+        underline_params(var v, var g, to.underline)
     if to.blink != from.blink
         let code_bl = if to.blink
             5
         else
             25
-        one(v, g, code_bl)
+        one(var v, var g, code_bl)
     if to.inverse != from.inverse
         let code_iv = if to.inverse
             7
         else
             27
-        one(v, g, code_iv)
+        one(var v, var g, code_iv)
     if to.hidden != from.hidden
         let code_hd = if to.hidden
             8
         else
             28
-        one(v, g, code_hd)
+        one(var v, var g, code_hd)
     if to.strike != from.strike
         let code_st = if to.strike
             9
         else
             29
-        one(v, g, code_st)
+        one(var v, var g, code_st)
     if to.overline != from.overline
         let code_ov = if to.overline
             53
         else
             55
-        one(v, g, code_ov)
+        one(var v, var g, code_ov)
     if same_color(to.fg, from.fg) == false
-        many(v, g, color_params(to.fg, false, false))
+        many(var v, var g, color_params(to.fg, false, false))
     if same_color(to.bg, from.bg) == false
-        many(v, g, color_params(to.bg, true, false))
+        many(var v, var g, color_params(to.bg, true, false))
     if same_color(to.underline_color, from.underline_color) == false
-        many(v, g, color_params(to.underline_color, false, true))
+        many(var v, var g, color_params(to.underline_color, false, true))
     AnsiParams { values: v, groups: g, intermediates: [],
                  private_marker: vtparse.NO_PRIVATE_MARKER }
 

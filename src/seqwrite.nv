@@ -51,7 +51,7 @@ fn put(var out: [u8], b: Int) -> [u8]
 // `cursor_up(out, 0)` moves one row rather than none.
 fn put_int(var out: [u8], n: Int) -> [u8]
     if n <= 0
-        put(out, 0x30)
+        put(var out, 0x30)
     else
         var digits: [Int] = []
         var v = n
@@ -61,27 +61,27 @@ fn put_int(var out: [u8], n: Int) -> [u8]
         var o = out
         var k = list.len(digits) - 1
         while k >= 0
-            o = put(o, list.get(digits, k))
+            o = put(var o, list.get(digits, k))
             k = k - 1
         o
 
 // `ESC [`.
 fn csi_open(var out: [u8]) -> [u8]
-    put(put(out, 0x1B), 0x5B)
+    put(put(var out, 0x1B), 0x5B)
 
 // `CSI <n> <final>`.
 fn csi1(var out: [u8], n: Int, final_byte: Int) -> [u8]
-    put(put_int(csi_open(out), n), final_byte)
+    put(put_int(csi_open(var out), n), final_byte)
 
 // `CSI <a> ; <b> <final>`.
 fn csi2(var out: [u8], a: Int, b: Int, final_byte: Int) -> [u8]
-    put(put_int(put(put_int(csi_open(out), a), 0x3B), b), final_byte)
+    put(put_int(put(put_int(csi_open(var out), a), 0x3B), b), final_byte)
 
 // The string terminator the caller chose.
 fn string_end(var out: [u8], t: AnsiStringEnd) -> [u8]
     match t
-        AnsiEndWithBel => put(out, 0x07)
-        AnsiEndWithSt  => put(put(out, 0x1B), 0x5C)
+        AnsiEndWithBel => put(var out, 0x07)
+        AnsiEndWithSt  => put(put(var out, 0x1B), 0x5C)
 
 // A string's bytes, as the list the OSC writers take.
 fn str_bytes(text: Str) -> [u8]
@@ -111,44 +111,44 @@ fn erase_number(mode: AnsiEraseMode) -> Int
 // cursor_to appends CUP, which puts the cursor at `row` and `col`.
 // Both are one-based, and the top left is 1, 1.
 pub fn cursor_to(var out: [u8], row: Int, col: Int) -> [u8]
-    csi2(out, row, col, 0x48)
+    csi2(var out, row, col, 0x48)
 
 // cursor_up appends CUU, which moves up `n` rows and stops at the top
 // of the scroll region.
 pub fn cursor_up(var out: [u8], n: Int) -> [u8]
-    csi1(out, n, 0x41)
+    csi1(var out, n, 0x41)
 
 // cursor_down appends CUD, which moves down `n` rows and stops at the
 // bottom of the scroll region.
 pub fn cursor_down(var out: [u8], n: Int) -> [u8]
-    csi1(out, n, 0x42)
+    csi1(var out, n, 0x42)
 
 // cursor_forward appends CUF, which moves right `n` columns.
 pub fn cursor_forward(var out: [u8], n: Int) -> [u8]
-    csi1(out, n, 0x43)
+    csi1(var out, n, 0x43)
 
 // cursor_back appends CUB, which moves left `n` columns.
 pub fn cursor_back(var out: [u8], n: Int) -> [u8]
-    csi1(out, n, 0x44)
+    csi1(var out, n, 0x44)
 
 // cursor_column appends CHA, which moves to column `col` and leaves
 // the row alone.  The column is one-based.
 pub fn cursor_column(var out: [u8], col: Int) -> [u8]
-    csi1(out, col, 0x47)
+    csi1(var out, col, 0x47)
 
 // cursor_row appends VPA, which moves to row `row` and leaves the
 // column alone.  The row is one-based.
 pub fn cursor_row(var out: [u8], row: Int) -> [u8]
-    csi1(out, row, 0x64)
+    csi1(var out, row, 0x64)
 
 // cursor_next_line appends CNL, which moves down `n` rows to column
 // 1.
 pub fn cursor_next_line(var out: [u8], n: Int) -> [u8]
-    csi1(out, n, 0x45)
+    csi1(var out, n, 0x45)
 
 // cursor_prev_line appends CPL, which moves up `n` rows to column 1.
 pub fn cursor_prev_line(var out: [u8], n: Int) -> [u8]
-    csi1(out, n, 0x46)
+    csi1(var out, n, 0x46)
 
 // cursor_save appends DECSC (`ESC 7`), which saves the cursor position
 // and the current attributes together.
@@ -157,11 +157,11 @@ pub fn cursor_prev_line(var out: [u8], n: Int) -> [u8]
 // (`CSI s`), and why a program that saves and restores around a status
 // line does not have to re-emit its colours.
 pub fn cursor_save(var out: [u8]) -> [u8]
-    put(put(out, 0x1B), 0x37)
+    put(put(var out, 0x1B), 0x37)
 
 // cursor_restore appends DECRC (`ESC 8`).
 pub fn cursor_restore(var out: [u8]) -> [u8]
-    put(put(out, 0x1B), 0x38)
+    put(put(var out, 0x1B), 0x38)
 
 // AnsiCursorShape is what the cursor looks like.  It is DECSCUSR's six
 // settings plus the terminal's own default.
@@ -177,7 +177,7 @@ pub enum AnsiCursorShape
 
 // cursor_shape appends DECSCUSR.
 pub fn cursor_shape(var out: [u8], shape: AnsiCursorShape) -> [u8]
-    put(put(put_int(csi_open(out), shape_number(shape)), 0x20), 0x71)
+    put(put(put_int(csi_open(var out), shape_number(shape)), 0x20), 0x71)
 
 // ── Erasing and scrolling ───────────────────────────────────────────
 
@@ -198,21 +198,21 @@ pub enum AnsiEraseMode
 
 // erase_display appends ED.
 pub fn erase_display(var out: [u8], mode: AnsiEraseMode) -> [u8]
-    csi1(out, erase_number(mode), 0x4A)
+    csi1(var out, erase_number(mode), 0x4A)
 
 // erase_line appends EL.  `AnsiEraseScrollback` is not a line mode and
 // is written as `AnsiEraseAll`.
 pub fn erase_line(var out: [u8], mode: AnsiEraseMode) -> [u8]
     let n = erase_number(mode)
     if n == 3
-        csi1(out, 2, 0x4B)
+        csi1(var out, 2, 0x4B)
     else
-        csi1(out, n, 0x4B)
+        csi1(var out, n, 0x4B)
 
 // erase_chars appends ECH, which blanks `n` cells from the cursor
 // without moving anything.
 pub fn erase_chars(var out: [u8], n: Int) -> [u8]
-    csi1(out, n, 0x58)
+    csi1(var out, n, 0x58)
 
 // scroll_region appends DECSTBM, which sets the scrolling region to
 // rows `top`..`bottom`.  Both are one-based and inclusive.
@@ -221,42 +221,42 @@ pub fn erase_chars(var out: [u8], n: Int) -> [u8]
 // sequence rather than of this function, and it is the one every caller
 // forgets.
 pub fn scroll_region(var out: [u8], top: Int, bottom: Int) -> [u8]
-    csi2(out, top, bottom, 0x72)
+    csi2(var out, top, bottom, 0x72)
 
 // scroll_region_reset appends DECSTBM with no parameters, so that the
 // whole screen scrolls again.
 pub fn scroll_region_reset(var out: [u8]) -> [u8]
-    put(csi_open(out), 0x72)
+    put(csi_open(var out), 0x72)
 
 // scroll_up appends SU, which moves the region's content up `n`
 // rows.
 pub fn scroll_up(var out: [u8], n: Int) -> [u8]
-    csi1(out, n, 0x53)
+    csi1(var out, n, 0x53)
 
 // scroll_down appends SD, which moves the region's content down `n`
 // rows.
 pub fn scroll_down(var out: [u8], n: Int) -> [u8]
-    csi1(out, n, 0x54)
+    csi1(var out, n, 0x54)
 
 // insert_lines appends IL, which puts `n` blank lines at the cursor and
 // pushes the rest of the region down.
 pub fn insert_lines(var out: [u8], n: Int) -> [u8]
-    csi1(out, n, 0x4C)
+    csi1(var out, n, 0x4C)
 
 // delete_lines appends DL, which removes `n` lines at the cursor and
 // pulls the rest of the region up.
 pub fn delete_lines(var out: [u8], n: Int) -> [u8]
-    csi1(out, n, 0x4D)
+    csi1(var out, n, 0x4D)
 
 // insert_chars appends ICH, which puts `n` blank cells at the cursor
 // and pushes the rest of the line right.
 pub fn insert_chars(var out: [u8], n: Int) -> [u8]
-    csi1(out, n, 0x40)
+    csi1(var out, n, 0x40)
 
 // delete_chars appends DCH, which removes `n` cells at the cursor and
 // pulls the rest of the line left.
 pub fn delete_chars(var out: [u8], n: Int) -> [u8]
-    csi1(out, n, 0x50)
+    csi1(var out, n, 0x50)
 
 // ── Modes ───────────────────────────────────────────────────────────
 
@@ -311,7 +311,7 @@ pub fn set_mode(var out: [u8], mode: AnsiMode) -> [u8]
         0x3F
     else
         0
-    csi(out, marker, [mode_number(mode)], [], 0x68)
+    csi(var out, marker, [mode_number(mode)], [], 0x68)
 
 // reset_mode appends RM or DECRST for the mode.
 pub fn reset_mode(var out: [u8], mode: AnsiMode) -> [u8]
@@ -319,7 +319,7 @@ pub fn reset_mode(var out: [u8], mode: AnsiMode) -> [u8]
         0x3F
     else
         0
-    csi(out, marker, [mode_number(mode)], [], 0x6C)
+    csi(var out, marker, [mode_number(mode)], [], 0x6C)
 
 // mode_number is the number a mode goes on the wire as, and whether it
 // is a private one.
@@ -352,11 +352,11 @@ pub fn mode_is_private(mode: AnsiMode) -> Bool
 // has, from `sgr.sgr_transition`, `sgr.sgr_full` or its own
 // arithmetic.
 pub fn sgr(var out: [u8], params: [Int]) -> [u8]
-    csi(out, 0, params, [], 0x6D)
+    csi(var out, 0, params, [], 0x6D)
 
 // sgr_reset appends `CSI 0 m`.
 pub fn sgr_reset(var out: [u8]) -> [u8]
-    csi1(out, 0, 0x6D)
+    csi1(var out, 0, 0x6D)
 
 // sgr_change appends the shortest `CSI m` that takes the terminal from
 // `from` to `to`, and appends nothing at all when the two are equal.
@@ -380,7 +380,7 @@ pub fn sgr_change(var out: [u8], from: sgr.SgrAttrs, to: sgr.SgrAttrs) -> [u8]
     if vtparse.params_count(params) == 0
         out
     else
-        csi_params(out, params, 0x6D)
+        csi_params(var out, params, 0x6D)
 
 // ── Text ────────────────────────────────────────────────────────────
 
@@ -395,13 +395,13 @@ pub fn put_codepoint(var out: [u8], ch: Int) -> [u8]
     else
         ch
     if c < 0x80
-        put(out, c)
+        put(var out, c)
     else if c < 0x800
-        put(put(out, 0xC0 + c / 64), 0x80 + c % 64)
+        put(put(var out, 0xC0 + c / 64), 0x80 + c % 64)
     else if c < 0x10000
-        put(put(put(out, 0xE0 + c / 4096), 0x80 + c / 64 % 64), 0x80 + c % 64)
+        put(put(put(var out, 0xE0 + c / 4096), 0x80 + c / 64 % 64), 0x80 + c % 64)
     else
-        put(put(put(put(out, 0xF0 + c / 262144), 0x80 + c / 4096 % 64),
+        put(put(put(put(var out, 0xF0 + c / 262144), 0x80 + c / 4096 % 64),
                 0x80 + c / 64 % 64),
                 0x80 + c % 64)
 
@@ -413,7 +413,7 @@ pub fn put_codepoint(var out: [u8], ch: Int) -> [u8]
 pub fn put_text(var out: [u8], text: Str) -> [u8]
     var o = out
     for i in 0..str.len(text)
-        o = put(o, str.byte_at_or(text, i, 0))
+        o = put(var o, str.byte_at_or(text, i, 0))
     o
 
 // put_text_safe appends a string with every C0 control, every C1
@@ -438,17 +438,17 @@ pub fn put_text_safe(var out: [u8], text: Str) -> [u8]
             consumed = false
         else if b < 0x20
             // `^A` for 0x01, and `^[` for the ESC itself.
-            o = put(put(o, 0x5E), 0x40 + b)
+            o = put(put(var o, 0x5E), 0x40 + b)
         else if b == 0x7F
-            o = put(put(o, 0x5E), 0x3F)
+            o = put(put(var o, 0x5E), 0x3F)
         else if b == 0xC2 and i + 1 < n and next >= 0x80 and next <= 0x9F
             // A C1 control, which in UTF-8 is two bytes.  It uses `~`
             // rather than `^`, so that a reader can tell `ESC` from the
             // 8-bit CSI it stands in for.
-            o = put(put(o, 0x7E), 0x40 + (next - 0x80))
+            o = put(put(var o, 0x7E), 0x40 + (next - 0x80))
             consumed = true
         else
-            o = put(o, b)
+            o = put(var o, b)
     o
 
 // ── Strings ─────────────────────────────────────────────────────────
@@ -459,12 +459,12 @@ pub fn put_text_safe(var out: [u8], text: Str) -> [u8]
 // and OSC 4's is a colour specification.  Neither is text this package
 // should have an opinion about.
 pub fn osc(var out: [u8], code: Int, payload: [u8], terminator: AnsiStringEnd) -> [u8]
-    var o = put(put(out, 0x1B), 0x5D)
-    o = put_int(o, code)
-    o = put(o, 0x3B)
+    var o = put(put(var out, 0x1B), 0x5D)
+    o = put_int(var o, code)
+    o = put(var o, 0x3B)
     for b in payload
-        o = put(o, b as Int)
-    string_end(o, terminator)
+        o = put(var o, b as Int)
+    string_end(var o, terminator)
 
 // AnsiStringEnd is which terminator to write a string sequence with.
 //
@@ -481,7 +481,7 @@ pub enum AnsiStringEnd
 // name together.  That is what every terminal does with OSC 0, 1 and
 // 2.
 pub fn set_title(var out: [u8], title: Str) -> [u8]
-    osc(out, 0, str_bytes(title), AnsiEndWithBel)
+    osc(var out, 0, str_bytes(title), AnsiEndWithBel)
 
 // clipboard_write appends OSC 52 with an already-base64 payload.
 //
@@ -490,7 +490,7 @@ pub fn set_title(var out: [u8], title: Str) -> [u8]
 // that never writes a clipboard.  base64-nv is the package that
 // encodes it.
 pub fn clipboard_write(var out: [u8], selection: Str, base64_payload: Str) -> [u8]
-    osc(out, 52, str_bytes(selection + ";" + base64_payload), AnsiEndWithSt)
+    osc(var out, 52, str_bytes(selection + ";" + base64_payload), AnsiEndWithSt)
 
 // ── Raw ─────────────────────────────────────────────────────────────
 
@@ -502,18 +502,18 @@ pub fn clipboard_write(var out: [u8], selection: Str, base64_payload: Str) -> [u
 // hope are right would get raw bytes.  `private` is 0 for none.
 pub fn csi(var out: [u8], private: Int, params: [Int], intermediates: [Int],
            final_byte: Int) -> [u8]
-    var o = csi_open(out)
+    var o = csi_open(var out)
     if private != 0
-        o = put(o, private)
+        o = put(var o, private)
     var first = true
     for v in params
         if first == false
-            o = put(o, 0x3B)
-        o = put_int(o, v)
+            o = put(var o, 0x3B)
+        o = put_int(var o, v)
         first = false
     for b in intermediates
-        o = put(o, b)
-    put(o, final_byte)
+        o = put(var o, b)
+    put(var o, final_byte)
 
 // csi_params appends a CSI built from a parameter snapshot, colon
 // groups and all.
@@ -542,25 +542,25 @@ pub fn csi(var out: [u8], private: Int, params: [Int], intermediates: [Int],
 //     println("${list.len(out)}")
 // ```
 pub fn csi_params(var out: [u8], params: vtparse.AnsiParams, final_byte: Int) -> [u8]
-    var o = csi_open(out)
+    var o = csi_open(var out)
     if params.private_marker != vtparse.NO_PRIVATE_MARKER
-        o = put(o, params.private_marker)
+        o = put(var o, params.private_marker)
     for i in 0..vtparse.params_count(params)
         if i > 0
-            o = put(o, 0x3B)
+            o = put(var o, 0x3B)
         for j in 0..vtparse.params_sub_count(params, i)
             if j > 0
-                o = put(o, 0x3A)
+                o = put(var o, 0x3A)
             let v = vtparse.params_sub_at(params, i, j, vtparse.PARAM_EMPTY)
             if v != vtparse.PARAM_EMPTY
-                o = put_int(o, v)
+                o = put_int(var o, v)
     for b in params.intermediates
-        o = put(o, b)
-    put(o, final_byte)
+        o = put(var o, b)
+    put(var o, final_byte)
 
 // esc appends `ESC <intermediates> <final>`.
 pub fn esc(var out: [u8], intermediates: [Int], final_byte: Int) -> [u8]
-    var o = put(out, 0x1B)
+    var o = put(var out, 0x1B)
     for b in intermediates
-        o = put(o, b)
-    put(o, final_byte)
+        o = put(var o, b)
+    put(var o, final_byte)

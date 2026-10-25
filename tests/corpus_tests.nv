@@ -24,6 +24,7 @@
 use std.test
 use std.list
 use vtparse
+use vtcore
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
