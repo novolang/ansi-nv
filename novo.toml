@@ -26,6 +26,9 @@ stability   = "experimental"
 # none of them calls the allocator.
 layer       = "core"
 
+# `vtcore` is the module the device build covers; the other four speak `Str`, `Bytes` and lists, which the embedded runtime does not define.
+host_modules = ["seqwrite", "sgr", "vtparse", "vtquery"]
+
 category    = "terminal"
 
 tags        = ["ansi", "vt100", "xterm", "escape-sequences", "sgr", "csi", "osc", "terminal", "sans-io", "ecma-48", "embedded", "no-alloc"]
